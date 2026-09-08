@@ -1,6 +1,6 @@
 import { Popconfirm, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Trash2 } from "lucide-react";
+import { Download, Eye, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SkillPackageSkill } from "../../api/types/skillPackage";
 import { ResizableTable } from "@/components/ResizableTable";
@@ -10,6 +10,7 @@ interface PackageSkillsTableProps {
   skills: SkillPackageSkill[];
   canMutate: boolean;
   onView: (skill: SkillPackageSkill) => void;
+  onExport?: (skill: SkillPackageSkill) => void;
   onDelete?: (skill: SkillPackageSkill) => void;
 }
 
@@ -17,6 +18,7 @@ export default function PackageSkillsTable({
   skills,
   canMutate,
   onView,
+  onExport,
   onDelete,
 }: PackageSkillsTableProps) {
   const { t } = useTranslation();
@@ -43,7 +45,7 @@ export default function PackageSkillsTable({
     {
       title: t("skillPackages.tableActions"),
       key: "actions",
-      width: canMutate ? 88 : 56,
+      width: canMutate ? 120 : onExport ? 88 : 56,
       align: "center",
       render: (_v, row) => (
         <div className={skillStyles.tableActions}>
@@ -60,6 +62,21 @@ export default function PackageSkillsTable({
               <Eye size={14} />
             </button>
           </Tooltip>
+          {onExport ? (
+            <Tooltip title={t("skills.exportSkill")} mouseEnterDelay={0.5}>
+              <button
+                type="button"
+                className={skillStyles.tableActionBtn}
+                aria-label={t("skills.exportSkill")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExport(row);
+                }}
+              >
+                <Download size={14} />
+              </button>
+            </Tooltip>
+          ) : null}
           {canMutate && onDelete ? (
             <Popconfirm
               title={t("skillPackages.deleteSkillConfirm")}

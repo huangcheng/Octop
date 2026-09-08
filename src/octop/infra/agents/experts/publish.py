@@ -113,6 +113,7 @@ async def export_agent_workspace_to_dir(
     dest: Path,
     metadata: PublishedExpertSnapshotMeta | None = None,
     manifest_id: str | None = None,
+    allow_missing_manifest: bool = False,
 ) -> list[str]:
     """Atomically replace *dest* with exported workspace files."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +124,7 @@ async def export_agent_workspace_to_dir(
             dest=staging_dir,
             metadata=metadata,
             manifest_id=manifest_id or dest.name,
+            allow_missing_manifest=allow_missing_manifest,
         )
         _replace_snapshot_dir(staging_dir, dest)
     except BaseException:
@@ -137,6 +139,7 @@ async def _write_workspace_snapshot(
     dest: Path,
     metadata: PublishedExpertSnapshotMeta | None,
     manifest_id: str,
+    allow_missing_manifest: bool = False,
 ) -> list[str]:
     """Copy seedable workspace files into an empty staging directory."""
     paths = await _workspace_file_paths(workspace)
@@ -171,9 +174,12 @@ async def _write_workspace_snapshot(
     else:
         raw_manifest = await read_workspace_manifest_bytes(workspace)
         if raw_manifest is None:
-            raise ValueError(f"workspace does not contain {MANIFEST_FILENAME}")
-        _validate_manifest(raw_manifest)
-        manifest = raw_manifest
+            if not allow_missing_manifest:
+                raise ValueError(f"workspace does not contain {MANIFEST_FILENAME}")
+            manifest = json.dumps({"id": manifest_id}, ensure_ascii=False).encode()
+        else:
+            _validate_manifest(raw_manifest)
+            manifest = raw_manifest
 
     manifest_path = dest / MANIFEST_FILENAME
     manifest_path.write_bytes(manifest)
@@ -285,3 +291,8 @@ def _is_seedable_path(path: str) -> bool:
     if parts[0] == "agents":
         return basename.endswith(".md")
     return False
+
+
+def is_seedable_export_path(path: str) -> bool:
+    """Public alias for portable zip import path allowlisting."""
+    return _is_seedable_path(path)

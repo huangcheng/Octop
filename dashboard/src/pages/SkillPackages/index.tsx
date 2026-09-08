@@ -53,11 +53,8 @@ import { useHorizontalResize } from "../../hooks/useHorizontalResize";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useListPanelCollapsed } from "../../hooks/useListPanelCollapsed";
 import PageShell from "../../layouts/PageShell";
-import {
-  apiErrorMessage,
-  isNotFoundApiError,
-  parseApiError,
-} from "../../utils/apiError";
+import { apiErrorMessage, isNotFoundApiError } from "../../utils/apiError";
+import { showApiError } from "../../utils/showApiToast";
 import {
   SkillDrawer,
   type SkillFormValues,
@@ -68,7 +65,6 @@ import {
 } from "../Agent/Skills/components/SkillImportModal";
 import SkillHubTab from "../Agent/Skills/components/SkillHubTab";
 import skillStyles from "../Agent/Skills/index.module.less";
-import type { ParsedZipSkill } from "../Agent/Skills/components/parseSkillZip";
 import {
   EXPERT_ICON_NAMES,
   iconForName,
@@ -425,6 +421,20 @@ export default function SkillPackagesPage() {
     }
   };
 
+  const exportSkill = async (skill: { slug: string; name: string }) => {
+    if (!selected) return;
+    try {
+      await skillPackagesApi.exportSkillZip(
+        selected.id,
+        skill.slug,
+        skill.name || skill.slug,
+      );
+      message.success(t("skills.exportSuccess"));
+    } catch (error) {
+      message.error(apiErrorMessage(error, t("skills.exportFailed"), t));
+    }
+  };
+
   const confirmImport = async (
     bundleUrl: string,
     options?: { overwrite?: boolean },
@@ -448,41 +458,27 @@ export default function SkillPackagesPage() {
   };
 
   const confirmImportZip = async (
-    skillsToImport: ParsedZipSkill[],
+    file: File,
     options?: { overwrite?: boolean },
   ): Promise<ZipImportSummary | false> => {
     if (!selected || importing) return false;
-    const overwrite = Boolean(options?.overwrite);
-    let imported = 0;
-    let skipped = 0;
-    let failed = 0;
     setImporting(true);
     try {
-      for (const skill of skillsToImport) {
-        try {
-          await skillPackagesApi.createSkill(selected.id, {
-            name: skill.slug,
-            files: skill.files.map((file) => ({
-              path: file.path,
-              content_base64: file.contentBase64,
-            })),
-            overwrite,
-          });
-          imported += 1;
-        } catch (error) {
-          const code = parseApiError(error)?.code;
-          if (!overwrite && code === "SKILL_ALREADY_EXISTS") {
-            skipped += 1;
-            continue;
-          }
-          failed += 1;
-        }
-      }
+      const result = await skillPackagesApi.importSkillsZip(selected.id, file, {
+        overwrite: Boolean(options?.overwrite),
+      });
       await refreshSelected();
+      const copied = result.skills.filter((s) => s.copied).length;
       message.success(
-        t("skills.zipImportSummary", { imported, skipped, failed }),
+        t("skills.zipImportSummary", {
+          imported: result.imported,
+          copied,
+        }),
       );
-      return { imported, skipped, failed };
+      return { imported: result.imported, skipped: 0, failed: 0, copied };
+    } catch (error) {
+      showApiError(error, t("skills.zipParseFailed"), t);
+      return false;
     } finally {
       setImporting(false);
     }
@@ -508,6 +504,7 @@ export default function SkillPackagesPage() {
             skill={skill}
             canMutate={canMutate}
             onClick={() => void openEditSkill(skill.slug)}
+            onExport={() => void exportSkill(skill)}
             onDelete={
               canMutate ? () => void deleteSkill(skill.slug) : undefined
             }
@@ -519,6 +516,7 @@ export default function SkillPackagesPage() {
         skills={skills}
         canMutate={canMutate}
         onView={(skill) => void openEditSkill(skill.slug)}
+        onExport={(skill) => void exportSkill(skill)}
         onDelete={
           canMutate ? (skill) => void deleteSkill(skill.slug) : undefined
         }

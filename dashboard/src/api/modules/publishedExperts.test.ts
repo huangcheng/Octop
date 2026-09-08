@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { request } = vi.hoisted(() => ({ request: vi.fn() }));
+const { request, requestUpload, downloadApiFile } = vi.hoisted(() => ({
+  request: vi.fn(),
+  requestUpload: vi.fn(),
+  downloadApiFile: vi.fn(),
+}));
 
-vi.mock("../request", () => ({ request }));
+vi.mock("../request", () => ({ request, requestUpload, downloadApiFile }));
 
 import { publishedExpertsApi } from "./publishedExperts";
 
@@ -43,6 +47,11 @@ describe("publishedExpertsApi", () => {
       "/experts/published/expert%2F1/refresh",
       {
         method: "POST",
+        body: JSON.stringify({
+          name: "Updated",
+          description: "New description",
+          welcome_message: { zh: "欢迎", en: "Welcome" },
+        }),
       },
     );
     expect(request).toHaveBeenNthCalledWith(

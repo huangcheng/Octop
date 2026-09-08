@@ -235,6 +235,9 @@ see [Personas](./personas.md).
 | `GET`    | `/experts` | user | bundled expert catalog (locale-aware) |
 | `GET`    | `/experts/{expert_id}` | user | full expert template (SOUL.md, skills, files) |
 | `POST`   | `/agents/from-expert/{expert_id}` | user | body `{name, locale?, ...}` → `201` |
+| `GET`    | `/agents/{aid}/export-expert.zip` | owner | portable expert zip (seed + localized package skills) |
+| `GET`    | `/experts/published/{id}/export.zip` | user | published snapshot as zip |
+| `POST`   | `/experts/import-zip` | user | multipart `file`; always creates a new agent (`201`); name clash → `-副本`/`-copy`; max 100MB / 120s |
 
 Bundled experts live in `src/octop/infra/agents/experts/library/`
 (en/zh divisions); the catalog is locale-aware via
@@ -255,6 +258,9 @@ Bundled experts live in `src/octop/infra/agents/experts/library/`
 | `GET`    | `/agents/{aid}/workspace/grep` | owner | grep backend files |
 | `GET`    | `/agents/{aid}/workspace/...` | owner | see `api/routers/workspace.py` |
 | `GET`    | `/agents/{aid}/skills` | owner | list installed skills |
+| `GET`    | `/agents/{aid}/skills/{slug}/export.zip` | owner | download skill directory as zip |
+| `POST`   | `/agents/{aid}/skills/import-zip` | owner | multipart `file` + optional `overwrite`; default copy-on-collision; max 64MB / 60s |
+| `POST`   | `/skill-packages/{id}/skills/import-zip` | skill_packages | multipart `file` + optional `overwrite`; default copy-on-collision; max 64MB / 60s |
 | `PUT`    | `/agents/{aid}/skills/{slug}` | owner | enable / disable a skill |
 | `GET`    | `/agents/{aid}/skills/hub/search` | user | Skill Hub search |
 | `GET`    | `/agents/{aid}/skills/hub/rankings` | user | Skill Hub rankings |

@@ -3,7 +3,6 @@ import { Button, Checkbox, Modal, Segmented } from "antd";
 import { Upload as UploadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import styles from "../index.module.less";
-import { parseSkillZip, type ParsedZipSkill } from "./parseSkillZip";
 
 const DEFAULT_SKILL_URL_PREFIXES = [
   "https://skills.sh/",
@@ -12,10 +11,13 @@ const DEFAULT_SKILL_URL_PREFIXES = [
   "https://github.com/",
 ] as const;
 
+const MAX_ZIP_BYTES = 64 * 1024 * 1024;
+
 export type ZipImportSummary = {
   imported: number;
-  skipped: number;
-  failed: number;
+  skipped?: number;
+  failed?: number;
+  copied?: number;
 };
 
 export interface SkillImportModalProps {
@@ -27,8 +29,9 @@ export interface SkillImportModalProps {
     bundleUrl: string,
     options: { overwrite: boolean },
   ) => Promise<boolean>;
+  /** Server-side zip import; pass overwrite to replace same-slug skills. */
   onImportZip: (
-    skills: ParsedZipSkill[],
+    file: File,
     options: { overwrite: boolean },
   ) => Promise<ZipImportSummary | false>;
   urlPrefixes?: readonly string[];
@@ -58,7 +61,6 @@ export function SkillImportModal({
   const [zipFile, setZipFile] = useState<File | null>(null);
   const [zipError, setZipError] = useState("");
   const [overwrite, setOverwrite] = useState(false);
-  const [parsing, setParsing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -70,7 +72,6 @@ export function SkillImportModal({
       setZipFile(null);
       setZipError("");
       setOverwrite(false);
-      setParsing(false);
       setIsDragging(false);
     }
   }, [open]);
@@ -83,6 +84,11 @@ export function SkillImportModal({
     if (!file.name.toLowerCase().endsWith(".zip")) {
       setZipFile(null);
       setZipError(t("skills.zipOnly"));
+      return;
+    }
+    if (file.size > MAX_ZIP_BYTES) {
+      setZipFile(null);
+      setZipError(t("skills.zipTooLarge"));
       return;
     }
     setZipError("");
@@ -105,7 +111,7 @@ export function SkillImportModal({
   };
 
   const handleConfirm = async () => {
-    if (importing || parsing) return;
+    if (importing) return;
 
     if (mode === "url") {
       const trimmed = importUrl.trim();
@@ -120,29 +126,12 @@ export function SkillImportModal({
       return;
     }
 
-    setParsing(true);
     setZipError("");
-    try {
-      const skills = await parseSkillZip(zipFile);
-      const summary = await onImportZip(skills, { overwrite });
-      if (summary) onClose();
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "";
-      if (code === "ZIP_TOO_LARGE") {
-        setZipError(t("skills.zipTooLarge"));
-      } else if (code === "ZIP_EMPTY") {
-        setZipError(t("skills.zipEmpty"));
-      } else if (code === "ZIP_NO_SKILLS") {
-        setZipError(t("skills.zipNoSkills"));
-      } else {
-        setZipError(t("skills.zipParseFailed"));
-      }
-    } finally {
-      setParsing(false);
-    }
+    const summary = await onImportZip(zipFile, { overwrite });
+    if (summary) onClose();
   };
 
-  const busy = importing || parsing;
+  const busy = importing;
   const confirmDisabled =
     busy ||
     (mode === "url"
@@ -355,6 +344,10 @@ export function SkillImportModal({
           {zipError ? (
             <div className={styles.importUrlError}>{zipError}</div>
           ) : null}
+
+          <p className={styles.importHintTitle} style={{ marginTop: 12 }}>
+            {overwrite ? t("skills.zipOverwriteHint") : t("skills.zipCopyHint")}
+          </p>
         </>
       )}
 

@@ -1,5 +1,5 @@
 import { Popconfirm } from "antd";
-import { FileCode2, Info, Trash2 } from "lucide-react";
+import { Download, FileCode2, Info, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SkillPackageSkill } from "../../api/types/skillPackage";
 import skillStyles from "../Agent/Skills/index.module.less";
@@ -8,6 +8,7 @@ interface PackageSkillCardProps {
   skill: SkillPackageSkill;
   canMutate: boolean;
   onClick: () => void;
+  onExport?: () => void;
   onDelete?: () => void;
 }
 
@@ -17,6 +18,7 @@ export function PackageSkillCard({
   skill,
   canMutate,
   onClick,
+  onExport,
   onDelete,
 }: PackageSkillCardProps) {
   const { t } = useTranslation();
@@ -84,24 +86,40 @@ export function PackageSkillCard({
             <Info size={14} />
             {t("common.viewDetail")}
           </button>
-          {canMutate && onDelete ? (
+          {onExport || (canMutate && onDelete) ? (
             <div className={skillStyles.footerActions}>
-              <Popconfirm
-                title={t("skillPackages.deleteSkillConfirm")}
-                okText={t("common.delete")}
-                cancelText={t("common.cancel")}
-                okButtonProps={{ danger: true }}
-                onConfirm={onDelete}
-              >
+              {onExport ? (
                 <button
                   type="button"
                   className={skillStyles.deleteIconBtn}
-                  onClick={(e) => e.stopPropagation()}
-                  aria-label={t("common.delete")}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExport();
+                  }}
+                  aria-label={t("skills.exportSkill")}
+                  title={t("skills.exportSkill")}
                 >
-                  <Trash2 size={14} />
+                  <Download size={14} />
                 </button>
-              </Popconfirm>
+              ) : null}
+              {canMutate && onDelete ? (
+                <Popconfirm
+                  title={t("skillPackages.deleteSkillConfirm")}
+                  okText={t("common.delete")}
+                  cancelText={t("common.cancel")}
+                  okButtonProps={{ danger: true }}
+                  onConfirm={onDelete}
+                >
+                  <button
+                    type="button"
+                    className={skillStyles.deleteIconBtn}
+                    onClick={(e) => e.stopPropagation()}
+                    aria-label={t("common.delete")}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </Popconfirm>
+              ) : null}
             </div>
           ) : null}
         </div>

@@ -43,3 +43,11 @@ def test_non_ascii_without_extension() -> None:
 def test_strips_directory_components() -> None:
     assert content_disposition("/outbound/report.pdf") == 'attachment; filename="report.pdf"'
     assert content_disposition(r"C:\Users\me\report.pdf") == 'attachment; filename="report.pdf"'
+
+
+def test_zip_download_filename_uses_display_name() -> None:
+    from octop.api.common.content_disposition import zip_download_filename
+
+    assert zip_download_filename("运维助手") == "运维助手.zip"
+    assert zip_download_filename("pdf-reader") == "pdf-reader.zip"
+    assert zip_download_filename("a/b:c") == "a-b-c.zip"

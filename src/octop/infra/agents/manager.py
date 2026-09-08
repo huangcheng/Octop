@@ -8,7 +8,7 @@ import logging
 import re
 import shutil
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -562,35 +562,59 @@ class AgentManager:
                 self._repos.agent_repo.set_shared(agent_id, True)
                 row = self._repos.agent_repo.get(agent_id)
                 assert row is not None
-            if spec.template_name:
-                await self._seed_expert_template(row, spec.template_name)
-            if workspace_initializer is not None:
-                workspace = self._backend_workspace_for_row(row)
-                await workspace_initializer(row, workspace)
-                row = self._repos.agent_repo.get(agent_id)
-                assert row is not None
-            if defer_bootstrap:
-                self._repos.agent_repo.set_state(agent_id, "starting")
-                row = self._repos.agent_repo.get(agent_id)
-                assert row is not None
-                asyncio.create_task(
-                    self._complete_create_bootstrap(row),
-                    name=f"bootstrap-agent-{agent_id}",
-                )
-            else:
-                agent = await self._start_agent(row, init_workspace=True)
-                if agent is not None and spec.template_name:
-                    if self._spec_is_opensandbox(self._backend_spec_for_row(row)):
-                        await self._seed_expert_template(row, spec.template_name)
-                    reload = getattr(agent, "reload_subagents", None)
-                    if callable(reload):
-                        await asyncio.to_thread(reload)
+            try:
+                if spec.template_name:
+                    await self._seed_expert_template(row, spec.template_name)
+                if workspace_initializer is not None:
+                    workspace = self._backend_workspace_for_row(row)
+                    await workspace_initializer(row, workspace)
+                    row = self._repos.agent_repo.get(agent_id)
+                    assert row is not None
+                if defer_bootstrap:
+                    self._repos.agent_repo.set_state(agent_id, "starting")
+                    row = self._repos.agent_repo.get(agent_id)
+                    assert row is not None
+                    asyncio.create_task(
+                        self._complete_create_bootstrap(row),
+                        name=f"bootstrap-agent-{agent_id}",
+                    )
+                else:
+                    agent = await self._start_agent(row, init_workspace=True)
+                    if agent is not None and spec.template_name:
+                        if self._spec_is_opensandbox(self._backend_spec_for_row(row)):
+                            await self._seed_expert_template(row, spec.template_name)
+                        reload = getattr(agent, "reload_subagents", None)
+                        if callable(reload):
+                            await asyncio.to_thread(reload)
+            except (Exception, asyncio.CancelledError):
+                # Avoid half-created agents when seed / start fails or the create
+                # task is cancelled (e.g. import timeout). Do not call ``self.delete``
+                # here — it also takes ``_lock``.
+                self._cleanup_failed_create_locked(agent_id)
+                raise
             self._repos.audit_repo.write(
                 actor=ACTOR_SYSTEM, action="agent.create", target=agent_id, payload=spec.name
             )
             if self._proactive_scheduler is not None:
                 self._proactive_scheduler.ensure_scheduled(agent_id)
             return row
+
+    def _cleanup_failed_create_locked(self, agent_id: str) -> None:
+        """Best-effort rollback while ``self._lock`` is already held.
+
+        Harness may not have registered the agent yet (seed failed before start);
+        only wipe workspace disk + DB row. Do not call ``self.delete`` (same lock).
+        """
+        workspace_dir = self.resolve_workspace_dir(agent_id, persist_if_missing=False)
+        with suppress(OSError):
+            if workspace_dir.exists():
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+        with suppress(Exception):
+            self._repos.agent_repo.delete(agent_id)
+        self._plugin_tool_labels.pop(agent_id, None)
+        if self._proactive_scheduler is not None:
+            with suppress(Exception):
+                self._proactive_scheduler.cancel(agent_id)
 
     def _preserve_system_files_path(self, agent_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         """Keep ``system_files_path`` as an internal layout control.
@@ -1998,8 +2022,9 @@ class AgentManager:
 
     async def _complete_create_bootstrap(self, row: AgentRow) -> None:
         """Start harness runtime after create (expert files are already seeded on disk)."""
+        agent_id = row.agent_id
         try:
-            fresh = self._repos.agent_repo.get(row.agent_id)
+            fresh = self._repos.agent_repo.get(agent_id)
             if fresh is None:
                 return
             agent = await self._start_agent(fresh, init_workspace=True)
@@ -2007,8 +2032,23 @@ class AgentManager:
                 reload = getattr(agent, "reload_subagents", None)
                 if callable(reload):
                     await asyncio.to_thread(reload)
-        except Exception:
-            logger.exception("Deferred bootstrap failed for agent %s", row.agent_id)
+            if agent is None:
+                # ``_start_agent`` normally sets ``failed``; keep state consistent if not.
+                current = self._repos.agent_repo.get(agent_id)
+                if current is not None and (current.last_state or "") == "starting":
+                    self._repos.agent_repo.set_state(
+                        agent_id,
+                        "failed",
+                        error=format_agent_start_error(RuntimeError("bootstrap returned no agent")),
+                    )
+        except Exception as exc:
+            logger.exception("Deferred bootstrap failed for agent %s", agent_id)
+            with suppress(Exception):
+                self._repos.agent_repo.set_state(
+                    agent_id,
+                    "failed",
+                    error=format_agent_start_error(exc),
+                )
 
     async def _start_agent(
         self, row: AgentRow, *, init_workspace: bool = True

@@ -350,6 +350,43 @@ export async function requestBlob(
   path: string,
   options: RequestInit = {},
 ): Promise<Blob> {
+  const { blob } = await requestBlobDownload(path, options);
+  return blob;
+}
+
+/** Parse RFC 5987 / quoted ``filename`` from a Content-Disposition header. */
+export function filenameFromContentDisposition(
+  header: string | null | undefined,
+): string | undefined {
+  if (!header) return undefined;
+  const starred = /filename\*\s*=\s*(?:UTF-8''|utf-8'')([^;]+)/i.exec(header);
+  if (starred) {
+    try {
+      return decodeURIComponent(starred[1].trim().replace(/^["']|["']$/g, ""));
+    } catch {
+      /* fall through */
+    }
+  }
+  const quoted = /filename\s*=\s*"((?:\\.|[^"\\])*)"/i.exec(header);
+  if (quoted) {
+    return quoted[1].replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+  }
+  const plain = /filename\s*=\s*([^;]+)/i.exec(header);
+  if (plain) {
+    return plain[1].trim().replace(/^["']|["']$/g, "");
+  }
+  return undefined;
+}
+
+export type BlobDownload = { blob: Blob; filename?: string };
+
+/**
+ * Download a binary resource and surface the server Content-Disposition name.
+ */
+export async function requestBlobDownload(
+  path: string,
+  options: RequestInit = {},
+): Promise<BlobDownload> {
   assertNotSetupLocked(path);
 
   const url = getApiUrl(path);
@@ -375,7 +412,28 @@ export async function requestBlob(
     );
   }
 
-  return response.blob();
+  const filename = filenameFromContentDisposition(
+    response.headers.get("Content-Disposition"),
+  );
+  return { blob: await response.blob(), filename };
+}
+
+/** Trigger a browser download for an authenticated API path. */
+export async function downloadApiFile(
+  path: string,
+  fallbackFilename: string,
+  options: RequestInit = {},
+): Promise<void> {
+  const { blob, filename } = await requestBlobDownload(path, options);
+  const name = filename || fallbackFilename;
+  const objUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objUrl;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(objUrl), 100);
 }
 
 /**

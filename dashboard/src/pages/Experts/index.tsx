@@ -17,18 +17,19 @@
  *   DELETE /agents/{id}                   → delete (via AgentCard)
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Spin, Tabs, Segmented, Tooltip } from "antd";
 import { message } from "@/utils/antdMessage";
 
-import { LayoutGrid, List, RefreshCw } from "lucide-react";
+import { LayoutGrid, List, RefreshCw, Upload } from "lucide-react";
 import PageShell from "../../layouts/PageShell";
 import { request } from "../../api/request";
 import {
   publishedExpertsApi,
   type PublishedExpert,
 } from "../../api/modules/publishedExperts";
+import { apiErrorMessage } from "../../utils/apiError";
 import { useAgent } from "../../context/AgentContext";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCardTableView } from "../../hooks/useCardTableView";
@@ -257,6 +258,30 @@ export default function ExpertsPage() {
     [refreshAgents],
   );
 
+  const importZipInputRef = useRef<HTMLInputElement>(null);
+  const [importingZip, setImportingZip] = useState(false);
+
+  const handleImportExpertZip = useCallback(
+    async (file: File | null) => {
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith(".zip")) {
+        message.error(t("experts.importZipOnly"));
+        return;
+      }
+      setImportingZip(true);
+      try {
+        const created = await publishedExpertsApi.importZip(file);
+        message.success(t("experts.importZipSuccess", { name: created.name }));
+        handleCreated(created.agent_id, created.name);
+      } catch (err) {
+        message.error(apiErrorMessage(err, t("experts.importZipFailed"), t));
+      } finally {
+        setImportingZip(false);
+      }
+    },
+    [handleCreated, t],
+  );
+
   const openExpertLibrary = useCallback(() => {
     setActiveTab("library");
   }, []);
@@ -297,8 +322,20 @@ export default function ExpertsPage() {
           <div className={styles.emptyHint}>
             {t("experts.emptyMyExpertsHint")}
           </div>
+          <p className={styles.importZipHint}>
+            {t("experts.importZipCopyHint")}
+          </p>
           <div className={styles.emptyActions}>
             {refreshButton}
+            <button
+              type="button"
+              className={styles.emptyAction}
+              disabled={importingZip}
+              title={t("experts.importZipCopyHint")}
+              onClick={() => importZipInputRef.current?.click()}
+            >
+              {t("experts.importZip")}
+            </button>
             <button className={styles.emptyAction} onClick={openExpertLibrary}>
               {t("experts.goToLibrary")}
             </button>
@@ -340,11 +377,24 @@ export default function ExpertsPage() {
               ]}
             />
             {refreshButton}
+            <button
+              type="button"
+              className={styles.toolbarBtn}
+              disabled={importingZip}
+              title={t("experts.importZipCopyHint")}
+              onClick={() => importZipInputRef.current?.click()}
+            >
+              <Upload size={14} />
+              {t("experts.importZip")}
+            </button>
             <button className={styles.toolbarBtn} onClick={openExpertLibrary}>
               {t("experts.addFromLibrary")}
             </button>
           </div>
         </div>
+        <p className={styles.importZipHintBar}>
+          {t("experts.importZipCopyHint")}
+        </p>
         {showCardView ? (
           <div className={styles.cardGrid}>
             {localAgents.map((agent) => (
@@ -401,6 +451,8 @@ export default function ExpertsPage() {
     refreshButton,
     refreshPublishedExperts,
     showCardView,
+    importingZip,
+    viewMode,
     t,
   ]);
 
@@ -520,6 +572,17 @@ export default function ExpertsPage() {
       title={t("pageShell.experts.title")}
       subtitle={t("pageShell.experts.subtitle")}
     >
+      <input
+        ref={importZipInputRef}
+        type="file"
+        accept=".zip,application/zip"
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const next = event.target.files?.[0] ?? null;
+          event.target.value = "";
+          void handleImportExpertZip(next);
+        }}
+      />
       <Tabs
         activeKey={activeTab}
         onChange={(k) => setActiveTab(k as TabKey)}

@@ -28,6 +28,7 @@ import {
   Notebook,
   Waypoints,
   Wrench,
+  Download,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -50,7 +51,11 @@ import {
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
 import { isSharedExpertViewer } from "../../../utils/sharedExpert";
-import type { PublishedExpert } from "../../../api/modules/publishedExperts";
+import {
+  publishedExpertsApi,
+  type PublishedExpert,
+} from "../../../api/modules/publishedExperts";
+import { apiErrorMessage } from "../../../utils/apiError";
 import PublishTemplateButton from "./PublishTemplateButton";
 
 const STATE_COLORS: Record<string, string> = {
@@ -387,7 +392,7 @@ export default function AgentExpertsTable({
     {
       title: t("experts.table.actions", "操作"),
       key: "actions",
-      width: 370,
+      width: 400,
       fixed: isMobile ? undefined : "right",
       render: (_v, row) => {
         const state = localStates[row.agent_id] ?? row.state;
@@ -399,6 +404,31 @@ export default function AgentExpertsTable({
           <div className={styles.tableActions}>
             {isOwner && (
               <>
+                <Tooltip title={t("experts.exportZip")} mouseEnterDelay={0.5}>
+                  <button
+                    type="button"
+                    className={styles.tableActionBtn}
+                    onClick={() => {
+                      void publishedExpertsApi
+                        .exportAgentZip(row.agent_id, row.name)
+                        .then(() =>
+                          message.success(t("experts.exportZipSuccess")),
+                        )
+                        .catch((err) =>
+                          message.error(
+                            apiErrorMessage(
+                              err,
+                              t("experts.exportZipFailed"),
+                              t,
+                            ),
+                          ),
+                        );
+                    }}
+                    aria-label={t("experts.exportZip")}
+                  >
+                    <Download size={13} />
+                  </button>
+                </Tooltip>
                 <Tooltip title={t("experts.reloadAgent")}>
                   <button
                     type="button"

@@ -41,10 +41,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from octop.api.common.agent import require_agent_owner_row, require_agent_row
+from octop.api.common.content_disposition import content_disposition, zip_download_filename
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.manager import (
     skill_package_ids_list,
@@ -557,6 +559,95 @@ async def get_skill(
         "body": body,
         "raw": manifest,
     }
+
+
+@router.get(
+    "/agents/{agent_id}/skills/{name}/export.zip",
+    summary="Download a skill directory as zip",
+    response_class=StreamingResponse,
+)
+async def export_skill_zip(
+    agent_id: str,
+    name: str,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> StreamingResponse:
+    from octop.infra.skills.skill_zip import (  # noqa: PLC0415
+        build_skill_zip_bytes,
+        collect_workspace_skill_files,
+    )
+    from octop.infra.utils.frontmatter import parse_frontmatter  # noqa: PLC0415
+
+    ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server, owner_only=True)
+    files = await collect_workspace_skill_files(ctx.workspace, name)
+    display = name
+    for rel, content in files:
+        if rel == "SKILL.md":
+            meta, _ = parse_frontmatter(content.decode("utf-8", errors="replace"))
+            label = str(meta.get("name") or "").strip()
+            if label:
+                display = label
+            break
+    data = build_skill_zip_bytes(slug=name, files=files)
+    filename = zip_download_filename(display, fallback=name)
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
+@router.post(
+    "/agents/{agent_id}/skills/import-zip",
+    status_code=201,
+    summary="Import skills from a portable zip (copy-on-collision)",
+    description=(
+        "Default: copy-on-collision (`-copy` / `-copyN`). "
+        "Pass form field `overwrite=true` to replace same-slug skills. "
+        "Max archive size 64MB; import aborts after 60s."
+    ),
+)
+async def import_skills_zip(
+    agent_id: str,
+    file: UploadFile = File(...),  # noqa: B008
+    overwrite: bool = Form(False),  # noqa: B008
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Install from zip. Default copies on clash; ``overwrite`` replaces in place."""
+    from octop.infra.skills.skill_zip import (  # noqa: PLC0415
+        import_portable_skill_zip,
+        list_active_workspace_skill_slugs,
+    )
+
+    ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
+    raw = await file.read()
+    existing = await list_active_workspace_skill_slugs(ctx.workspace)
+
+    async def _install(slug: str, files: Sequence[tuple[str, bytes]]) -> None:
+        await _guard_package_only_skill_write(ctx.workspace, ctx.config, server, slug)
+        with contextlib.suppress(Exception):
+            await ctx.workspace.adelete(f"skills/{slug}")
+        await _write_skill_files(ctx.workspace, f"skills/{slug}", files)
+
+    installed = await import_portable_skill_zip(
+        data=raw,
+        existing_slugs=existing,
+        install_skill=_install,
+        overwrite=overwrite,
+    )
+    disabled = _disabled_set(ctx.config)
+    changed = False
+    for item in installed:
+        slug = str(item["slug"])
+        if slug in disabled:
+            disabled.discard(slug)
+            changed = True
+    if changed:
+        await _persist_disabled(server, agent_id, disabled)
+    return {"imported": len(installed), "skills": installed}
 
 
 # --- write endpoints --------------------------------------------------------

@@ -1,4 +1,4 @@
-import { request } from "../request";
+import { request, requestUpload, downloadApiFile } from "../request";
 
 export interface PublishedExpert {
   id: string;
@@ -51,6 +51,15 @@ export interface InstalledPublishedExpert {
   bootstrap_pending: boolean;
 }
 
+export interface ImportedExpertZip {
+  agent_id: string;
+  name: string;
+  description: string | null;
+  state: string;
+  last_error?: string | null;
+  bootstrap_pending: boolean;
+}
+
 const publishedPath = (expertId: string) =>
   `/experts/published/${encodeURIComponent(expertId)}`;
 
@@ -80,4 +89,22 @@ export const publishedExpertsApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  exportAgentZip: (agentId: string, fallbackName: string) =>
+    downloadApiFile(
+      `/agents/${encodeURIComponent(agentId)}/export-expert.zip`,
+      `${fallbackName}.zip`,
+    ),
+
+  exportPublishedZip: (expertId: string, fallbackName: string) =>
+    downloadApiFile(
+      `${publishedPath(expertId)}/export.zip`,
+      `${fallbackName}.zip`,
+    ),
+
+  importZip: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return requestUpload<ImportedExpertZip>("/experts/import-zip", form);
+  },
 };

@@ -20,6 +20,7 @@ import {
   Notebook,
   Waypoints,
   Wrench,
+  Download,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -41,7 +42,11 @@ import {
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
 import { isSharedExpertViewer } from "../../../utils/sharedExpert";
-import type { PublishedExpert } from "../../../api/modules/publishedExperts";
+import {
+  publishedExpertsApi,
+  type PublishedExpert,
+} from "../../../api/modules/publishedExperts";
+import { apiErrorMessage } from "../../../utils/apiError";
 import PublishTemplateButton from "./PublishTemplateButton";
 
 const STATE_META: Record<
@@ -344,6 +349,31 @@ export const AgentCard = memo(function AgentCard({
                       aria-label={t("common.edit", "Edit")}
                     >
                       <Pencil size={12} />
+                    </button>
+                  </Tooltip>
+                  <Tooltip title={t("experts.exportZip")} mouseEnterDelay={0.5}>
+                    <button
+                      type="button"
+                      className={styles.agentCard2NameActionBtn}
+                      onClick={() => {
+                        void publishedExpertsApi
+                          .exportAgentZip(agent.agent_id, agent.name)
+                          .then(() =>
+                            message.success(t("experts.exportZipSuccess")),
+                          )
+                          .catch((err) =>
+                            message.error(
+                              apiErrorMessage(
+                                err,
+                                t("experts.exportZipFailed"),
+                                t,
+                              ),
+                            ),
+                          );
+                      }}
+                      aria-label={t("experts.exportZip")}
+                    >
+                      <Download size={12} />
                     </button>
                   </Tooltip>
                   <Popconfirm

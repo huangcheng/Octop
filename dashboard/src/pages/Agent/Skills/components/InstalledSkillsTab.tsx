@@ -28,19 +28,18 @@ interface InstalledSkillsTabProps {
     options?: { overwrite?: boolean },
   ) => Promise<boolean>;
   importFromZip: (
-    skills: Array<{
-      slug: string;
-      files: Array<{ path: string; contentBase64: string }>;
-    }>,
+    file: File,
     options?: { overwrite?: boolean },
   ) => Promise<
     | false
     | {
         imported: number;
-        skipped: number;
-        failed: number;
+        skipped?: number;
+        failed?: number;
+        copied?: number;
       }
   >;
+  exportSkill: (skill: SkillSpec) => Promise<boolean>;
   importing: boolean;
   toggleEnabled: (skill: SkillSpec) => Promise<boolean>;
   deleteSkill: (skill: SkillSpec) => Promise<boolean>;
@@ -57,6 +56,7 @@ export default function InstalledSkillsTab({
   updateSkill,
   importFromUrl,
   importFromZip,
+  exportSkill,
   importing,
   toggleEnabled,
   deleteSkill,
@@ -134,6 +134,11 @@ export default function InstalledSkillsTab({
     await deleteSkill(skill);
   };
 
+  const handleExport = async (skill: SkillSpec, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    await exportSkill(skill);
+  };
+
   const handleDrawerClose = () => {
     setDrawerOpen(false);
     setEditingSkill(null);
@@ -175,6 +180,9 @@ export default function InstalledSkillsTab({
             onMouseEnter={() => setHoverKey(skill.slug)}
             onMouseLeave={() => setHoverKey(null)}
             onToggleEnabled={(e) => void handleToggleEnabled(skill, e)}
+            onExport={
+              kind === "custom" ? (e) => void handleExport(skill, e) : undefined
+            }
             onDelete={
               kind === "custom" ? (e) => void handleDelete(skill, e) : undefined
             }
@@ -187,6 +195,9 @@ export default function InstalledSkillsTab({
         kind={kind}
         onView={(skill) => void handleEdit(skill)}
         onToggleEnabled={(skill) => void handleToggleEnabled(skill)}
+        onExport={
+          kind === "custom" ? (skill) => void handleExport(skill) : undefined
+        }
         onDelete={
           kind === "custom" ? (skill) => void handleDelete(skill) : undefined
         }

@@ -1,6 +1,6 @@
 import { Popconfirm, Switch, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Trash2 } from "lucide-react";
+import { Download, Eye, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SkillSpec } from "../useSkills";
 import { useSkillDisplayName } from "../skillDisplayNames";
@@ -11,6 +11,7 @@ interface SkillsTableProps {
   kind: "custom" | "builtin";
   onView: (skill: SkillSpec) => void;
   onToggleEnabled: (skill: SkillSpec) => void;
+  onExport?: (skill: SkillSpec) => void;
   onDelete?: (skill: SkillSpec) => void;
 }
 
@@ -19,6 +20,7 @@ export default function SkillsTable({
   kind,
   onView,
   onToggleEnabled,
+  onExport,
   onDelete,
 }: SkillsTableProps) {
   const { t } = useTranslation();
@@ -71,7 +73,7 @@ export default function SkillsTable({
     {
       title: t("skills.table.actions", "操作"),
       key: "actions",
-      width: kind === "custom" ? 88 : 56,
+      width: kind === "custom" ? 120 : 56,
       align: "center",
       render: (_v, row) => (
         <div className={styles.tableActions}>
@@ -88,6 +90,21 @@ export default function SkillsTable({
               <Eye size={13} />
             </button>
           </Tooltip>
+          {kind === "custom" && onExport ? (
+            <Tooltip title={t("skills.exportSkill")} mouseEnterDelay={0.5}>
+              <button
+                type="button"
+                className={styles.tableActionBtn}
+                aria-label={t("skills.exportSkill")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExport(row);
+                }}
+              >
+                <Download size={13} />
+              </button>
+            </Tooltip>
+          ) : null}
           {kind === "custom" && onDelete ? (
             <Popconfirm
               title={t("skills.deleteConfirmContent", { slug: row.slug })}

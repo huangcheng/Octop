@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import require_agent_owner_row, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
+from octop.api.common.content_disposition import content_disposition, zip_download_filename
 from octop.api.common.validators import assert_user_backend_root_dirs
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.avatar import (
@@ -369,6 +371,109 @@ async def get_published_expert(
             preview_paths,
         ),
     }
+
+
+@router.get(
+    "/agents/{agent_id}/export-expert.zip",
+    summary="Download a portable expert zip",
+    response_class=StreamingResponse,
+)
+async def export_expert_zip(
+    agent_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> StreamingResponse:
+    """Export seed files + localized mounted package skills as a shareable zip."""
+    from octop.infra.agents.experts.portable_zip import (  # noqa: PLC0415
+        build_expert_export_zip,
+        package_ids_for_agent,
+    )
+    from octop.infra.skills.skill_package_store import SkillPackageStore  # noqa: PLC0415
+
+    source = require_agent_owner_row(agent_id, user=user, as_user=None, server=server)
+    assert server.app_runtime is not None
+    assert server.services is not None
+    registry = server.app_runtime.agent_registry
+    workspace = registry.workspace_for_agent(agent_id)
+    if workspace is None:
+        raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+    store = SkillPackageStore(
+        repo=server.services.skill_package_repo,
+        root=server.paths.skill_packages_dir,
+    )
+    data = await build_expert_export_zip(
+        workspace=workspace,
+        source_agent_id=agent_id,
+        source_name=source.name,
+        package_ids=package_ids_for_agent(registry, agent_id),
+        store=store,
+    )
+    filename = zip_download_filename(source.name, fallback=agent_id)
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
+@router.get(
+    "/experts/published/{expert_id}/export.zip",
+    summary="Download a published expert snapshot as zip",
+    response_class=StreamingResponse,
+)
+async def export_published_expert_zip(
+    expert_id: str,
+    _: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> StreamingResponse:
+    from octop.infra.agents.experts.portable_zip import (  # noqa: PLC0415
+        build_published_snapshot_zip,
+    )
+
+    assert server.services is not None
+    row = _require_published_expert(server, expert_id)
+    snapshot_dir = _published_snapshot_dir(server, row.id)
+    data = await asyncio.to_thread(build_published_snapshot_zip, snapshot_dir)
+    filename = zip_download_filename(row.name, fallback=str(row.id))
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
+@router.post(
+    "/experts/import-zip",
+    status_code=201,
+    summary="Import a portable expert zip as a new agent",
+    description=(
+        "Always creates a new agent (fresh id). Display-name clash → `-副本`/`-copy`. "
+        f"Max archive size {100}MB; import aborts after 120s (cancelled create is rolled back)."
+    ),
+)
+async def import_expert_zip(
+    request: Request,
+    file: UploadFile = File(...),  # noqa: B008
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Always create a new agent (fresh id). Same display name → copy suffix."""
+    from octop.infra.agents.experts.portable_zip import (  # noqa: PLC0415
+        create_agent_from_expert_zip,
+    )
+    from octop.infra.utils.locale import resolve_request_locale  # noqa: PLC0415
+
+    assert server.app_runtime is not None
+    assert server.services is not None
+    raw = await file.read()
+    existing = {row.name for row in server.services.agent_repo.list_by_user(int(user.id))}
+    return await create_agent_from_expert_zip(
+        registry=server.app_runtime.agent_registry,
+        user_id=int(user.id),
+        zip_bytes=raw,
+        existing_names=existing,
+        locale=resolve_request_locale(request),
+    )
 
 
 @router.post(

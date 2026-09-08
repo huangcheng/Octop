@@ -1009,6 +1009,32 @@ async def test_deferred_create_initializes_workspace_before_bootstrap(
 
 
 @pytest.mark.asyncio
+async def test_deferred_bootstrap_marks_failed_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    services = _make_services(tmp_path)
+    registry = _make_registry(services)
+    monkeypatch.setattr(
+        registry,
+        "_start_agent",
+        AsyncMock(side_effect=RuntimeError("bootstrap boom")),
+    )
+    row = await registry.create(
+        AgentCreateSpec(name="deferred-fail"),
+        defer_bootstrap=True,
+    )
+    assert row.last_state == "starting"
+    for _ in range(50):
+        db_row = registry.get_row(row.agent_id)
+        assert db_row is not None
+        if db_row.last_state == "failed":
+            assert db_row.last_error
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("deferred bootstrap did not mark agent failed")
+
+
+@pytest.mark.asyncio
 async def test_create_with_template_writes_files(tmp_path: Path) -> None:
     """create() with template_name uploads expert files to the agent backend."""
     from octop.infra.agents.experts.catalog import (  # noqa: PLC0415

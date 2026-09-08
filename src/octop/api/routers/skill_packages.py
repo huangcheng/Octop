@@ -7,7 +7,7 @@ import base64
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from pydantic import BaseModel
 
 from octop.api.deps import get_server, require_permission
@@ -459,6 +459,88 @@ async def get_package_skill(
     raw = (store.package_skills_dir(package_id) / slug / "SKILL.md").read_text(encoding="utf-8")
     frontmatter, body = parse_frontmatter(raw)
     return {**skill, "frontmatter": frontmatter, "body": body, "raw": raw}
+
+
+@router.get(
+    "/{package_id}/skills/{slug}/export.zip",
+    summary="Download a package skill as zip",
+)
+async def export_package_skill_zip(
+    package_id: str,
+    slug: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    _user: User = Depends(require_permission("skill_packages")),
+) -> Any:
+    from fastapi.responses import StreamingResponse  # noqa: PLC0415
+
+    from octop.api.common.content_disposition import (  # noqa: PLC0415
+        content_disposition,
+        zip_download_filename,
+    )
+    from octop.infra.skills.skill_zip import (  # noqa: PLC0415
+        build_skill_zip_bytes,
+        collect_package_skill_files,
+    )
+
+    store = _store(server)
+    _package_or_404(store, package_id, locale=resolve_request_locale(request))
+    skill = _package_skill_or_404(
+        store,
+        package_id,
+        slug,
+        locale=resolve_request_locale(request),
+    )
+    files = collect_package_skill_files(store.package_skills_dir(package_id), slug)
+    data = build_skill_zip_bytes(slug=slug, files=files)
+    display = str(skill.get("name") or slug)
+    filename = zip_download_filename(display, fallback=slug)
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/zip",
+        headers={"Content-Disposition": content_disposition(filename)},
+    )
+
+
+@router.post(
+    "/{package_id}/skills/import-zip",
+    status_code=status.HTTP_201_CREATED,
+    summary="Import skills from a portable zip (copy-on-collision)",
+    description=(
+        "Default: copy-on-collision (`-copy` / `-copyN`). "
+        "Pass form field `overwrite=true` to replace same-slug skills. "
+        "Max archive size 64MB; import aborts after 60s."
+    ),
+)
+async def import_package_skills_zip(
+    package_id: str,
+    request: Request,
+    file: UploadFile = File(...),  # noqa: B008
+    overwrite: bool = Form(False),  # noqa: B008
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("skill_packages")),
+) -> dict[str, Any]:
+    """Install from zip. Default copies on clash; ``overwrite`` replaces in place."""
+    from octop.infra.skills.skill_zip import import_portable_skill_zip  # noqa: PLC0415
+
+    store = _store(server)
+    row = _package_or_404(store, package_id, locale=resolve_request_locale(request))
+    store.assert_can_mutate(row, user)
+    raw = await file.read()
+    existing = {str(item["slug"]) for item in store.list_skill_summaries(package_id)}
+
+    async def _install(slug: str, files: list[tuple[str, bytes]]) -> None:
+        await asyncio.to_thread(store.write_skill, package_id, slug, files)
+
+    installed = await import_portable_skill_zip(
+        data=raw,
+        existing_slugs=existing,
+        install_skill=_install,
+        overwrite=overwrite,
+    )
+    if installed and server.app_runtime is not None:
+        await server.app_runtime.agent_registry.refresh_agents_for_package(package_id)
+    return {"imported": len(installed), "skills": installed}
 
 
 @router.post("/{package_id}/skills", summary="Add a skill to a global skill package")

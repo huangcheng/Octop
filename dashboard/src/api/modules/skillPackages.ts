@@ -1,4 +1,4 @@
-import { request } from "../request";
+import { request, requestUpload, downloadApiFile } from "../request";
 import type {
   CreateSkillPackageBody,
   CreateSkillPackageSkillBody,
@@ -9,6 +9,16 @@ import type {
   UpdateSkillPackageBody,
   UpdateSkillPackageSkillBody,
 } from "../types/skillPackage";
+
+export type ImportedSkillZipSummary = {
+  imported: number;
+  skills: Array<{
+    slug: string;
+    name: string;
+    description: string;
+    copied: boolean;
+  }>;
+};
 
 export const skillPackagesApi = {
   list: () => request<SkillPackage[]>("/skill-packages"),
@@ -82,6 +92,14 @@ export const skillPackagesApi = {
       { method: "DELETE" },
     ),
 
+  exportSkillZip: (packageId: string, slug: string, fallbackName: string) =>
+    downloadApiFile(
+      `/skill-packages/${packageId}/skills/${encodeURIComponent(
+        slug,
+      )}/export.zip`,
+      `${fallbackName}.zip`,
+    ),
+
   importSkill: (
     packageId: string,
     body: { bundle_url: string; version?: string; overwrite?: boolean },
@@ -90,6 +108,20 @@ export const skillPackagesApi = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  importSkillsZip: (
+    packageId: string,
+    file: File,
+    options?: { overwrite?: boolean },
+  ) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("overwrite", options?.overwrite ? "true" : "false");
+    return requestUpload<ImportedSkillZipSummary>(
+      `/skill-packages/${packageId}/skills/import-zip`,
+      form,
+    );
+  },
 
   hubSearch: (q: string, limit = 50) =>
     request<Record<string, unknown>[]>(

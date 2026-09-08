@@ -33,3 +33,19 @@ def content_disposition(filename: str, *, disposition: str = "attachment") -> st
         return f'{disposition}; filename="{escaped}"'
     fallback = _ascii_fallback(base)
     return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{starred}"
+
+
+def zip_download_filename(display_name: str, *, fallback: str = "download") -> str:
+    """Build a ``.zip`` download basename from a human display name.
+
+    Strips path separators; keeps non-ASCII (encoded via :func:`content_disposition`).
+    """
+    import re
+
+    base = (display_name or "").strip() or fallback
+    base = re.sub(r"[/\\:\0]+", "-", base).strip(" .")
+    if not base:
+        base = fallback
+    if not base.lower().endswith(".zip"):
+        base = f"{base}.zip"
+    return base

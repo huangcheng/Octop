@@ -1,6 +1,7 @@
 import {
   Archive,
   Code2,
+  Download,
   FileSpreadsheet,
   FileText,
   Image,
@@ -21,6 +22,7 @@ interface SkillCardProps {
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onToggleEnabled: (e: React.MouseEvent) => void;
+  onExport?: (e?: React.MouseEvent) => void;
   onDelete?: (e?: React.MouseEvent) => void;
   /** When false, hide the enable/disable action (e.g. package not mounted). */
   showEnableToggle?: boolean;
@@ -180,6 +182,7 @@ export function SkillCard({
   onMouseEnter,
   onMouseLeave,
   onToggleEnabled,
+  onExport,
   onDelete,
   showEnableToggle = true,
 }: SkillCardProps) {
@@ -269,8 +272,22 @@ export function SkillCard({
             {t("common.viewDetail")}
           </button>
 
-          {(isCustomized && onDelete) || showEnableToggle ? (
+          {(isCustomized && (onDelete || onExport)) || showEnableToggle ? (
             <div className={styles.footerActions}>
+              {isCustomized && onExport && (
+                <button
+                  type="button"
+                  className={styles.deleteIconBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExport(e);
+                  }}
+                  aria-label={t("skills.exportSkill")}
+                  title={t("skills.exportSkill")}
+                >
+                  <Download size={14} />
+                </button>
+              )}
               {isCustomized && onDelete && (
                 <button
                   type="button"

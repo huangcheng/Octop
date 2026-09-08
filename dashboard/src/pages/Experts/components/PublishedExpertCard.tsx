@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { App, Dropdown } from "antd";
-import { MoreHorizontal } from "lucide-react";
+import { Download, MoreHorizontal } from "lucide-react";
 import { ExpertIcon } from "./iconForName";
 import {
   publishedExpertsApi,
@@ -78,6 +78,24 @@ export const PublishedExpertCard = memo(function PublishedExpertCard({
           <Dropdown
             menu={{
               items: [
+                {
+                  key: "export",
+                  label: t("experts.published.exportZip"),
+                  icon: <Download size={12} />,
+                  onClick: ({ domEvent }) => {
+                    domEvent.stopPropagation();
+                    void publishedExpertsApi
+                      .exportPublishedZip(expert.id, expert.name)
+                      .then(() =>
+                        message.success(t("experts.exportZipSuccess")),
+                      )
+                      .catch((err) =>
+                        message.error(
+                          apiErrorMessage(err, t("experts.exportZipFailed"), t),
+                        ),
+                      );
+                  },
+                },
                 {
                   key: "unpublish",
                   danger: true,
