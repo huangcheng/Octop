@@ -40,6 +40,19 @@ def _parse_tencent_credentials(row: VoiceProviderRow) -> tuple[str, str]:
     return str(secret_id), str(secret_key)
 
 
+def credentials_error(row: VoiceProviderRow, kind: str) -> str | None:
+    """Config-level credential check shared by probes and TTS preflight."""
+    if kind == "tencent":
+        try:
+            _parse_tencent_credentials(row)
+        except ValueError as exc:
+            return str(exc)
+        return None
+    if kind in {"openai", "mimo"} and not row.api_key:
+        return "API credentials missing"
+    return None
+
+
 def _voice_format(mime: str) -> str:
     lowered = mime.lower()
     if "webm" in lowered:

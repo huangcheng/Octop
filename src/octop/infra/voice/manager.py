@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +18,11 @@ class ResolvedVoiceProvider:
     name: str
     kind: str
     row: VoiceProviderRow | None
+
+
+def _provider_error(detail: str) -> OctopError:
+    """Readable 502 for provider-side failures (auth, quota, network, format)."""
+    return OctopError(ErrorCode.VOICE_PROVIDER_ERROR, detail, details={"detail": detail})
 
 
 class VoiceManager:
@@ -89,6 +94,24 @@ class VoiceManager:
         kind = self.resolve(name).kind
         return "audio/wav" if kind == "mimo" else "audio/mpeg"
 
+    def preflight_tts(self, provider_name: str | None) -> None:
+        """Validate TTS config before opening a streaming response (no network).
+
+        Mid-stream provider failures still abort the audio stream (HTTP
+        status is already sent); config errors surface as JSON envelopes.
+        """
+        name = provider_name or self.get_active()["tts"]
+        resolved = self.resolve(name)
+        kind = resolved.kind
+        if kind in {"browser", "edge"}:
+            return
+        row = resolved.row
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, f"{kind} voice provider is not configured")
+        detail = adapters.credentials_error(row, kind)
+        if detail:
+            raise _provider_error(detail)
+
     async def transcribe(
         self,
         audio: bytes,
@@ -107,19 +130,27 @@ class VoiceManager:
                 details={"provider": name},
             )
         row = resolved.row
+        call: Awaitable[adapters.STTResult]
         if kind == "openai":
             if row is None:
                 raise OctopError(ErrorCode.NOT_FOUND, "OpenAI voice provider is not configured")
-            return await adapters.transcribe_openai(row, audio, mime=mime, language=language)
-        if kind == "tencent":
+            call = adapters.transcribe_openai(row, audio, mime=mime, language=language)
+        elif kind == "tencent":
             if row is None:
                 raise OctopError(ErrorCode.NOT_FOUND, "Tencent voice provider is not configured")
-            return await adapters.transcribe_tencent(row, audio, mime=mime, language=language)
-        if kind == "mimo":
+            call = adapters.transcribe_tencent(row, audio, mime=mime, language=language)
+        elif kind == "mimo":
             if row is None:
                 raise OctopError(ErrorCode.NOT_FOUND, "Mimo voice provider is not configured")
-            return await adapters.transcribe_mimo(row, audio, mime=mime, language=language)
-        raise OctopError(ErrorCode.VOICE_KIND_UNSUPPORTED, f"unsupported STT kind {kind!r}")
+            call = adapters.transcribe_mimo(row, audio, mime=mime, language=language)
+        else:
+            raise OctopError(ErrorCode.VOICE_KIND_UNSUPPORTED, f"unsupported STT kind {kind!r}")
+        try:
+            return await call
+        except OctopError:
+            raise
+        except Exception as exc:  # provider/network failures must not 500
+            raise _provider_error(str(exc).strip() or type(exc).__name__) from exc
 
     async def synthesize(
         self,

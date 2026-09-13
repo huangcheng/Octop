@@ -137,6 +137,8 @@ async def synthesize_speech(
     server: Any = Depends(get_server),
 ) -> StreamingResponse:
     mgr = _voice_manager(server)
+    # Config errors must surface as JSON envelopes, not aborted audio streams.
+    mgr.preflight_tts(body.provider)
 
     async def _stream() -> AsyncIterator[bytes]:
         async for chunk in mgr.synthesize(

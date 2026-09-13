@@ -126,6 +126,7 @@
     "VOICE_KIND_UNSUPPORTED": "不支持的语音提供商。",
     "VOICE_CAPABILITY_MISMATCH": "语音能力不匹配。",
     "VOICE_PROVIDER_DISABLED": "语音提供商已禁用。",
+    "VOICE_PROVIDER_ERROR": "语音服务错误：{{detail}}",
     "INTERNAL_ERROR": "服务器内部错误。",
     "TLS_NOT_ELIGIBLE": "当前服务器配置不支持 TLS 证书申请。",
     "TLS_ISSUE_IN_PROGRESS": "已有证书申请任务正在进行。",
