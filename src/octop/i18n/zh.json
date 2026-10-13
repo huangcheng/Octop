@@ -667,6 +667,20 @@
   "channel": {
     "tool_hint_start": "🔧 正在调用工具：{tool_name}",
     "tool_hint_end": "✅ {tool_name} 已完成",
+    "steer": {
+      "ack_steered": "↪ 已纳入当前回合。会在下一个安全边界继续按你的纠正处理。",
+      "reject_attachments": "当前回合不支持用附件纠正。请只发文字，或等本回合结束后再发。",
+      "reject_queue_full": "当前回合排队的纠正已满，请等本回合结束后再试。",
+      "reject_input_too_large": "这条纠正太长，无法纳入当前回合。",
+      "reject_hitl_paused": "正在等待工具审批，请先完成审批再发送纠正。",
+      "reject_empty": "消息为空，未纳入队列。",
+      "reject_not_steerable": "当前回合暂时无法接受纠正。",
+      "reject_generic": "无法将这条纠正纳入当前回合。",
+      "discarded_cancelled": "因回合已停止，已丢弃排队中的纠正。",
+      "discarded_failed": "因回合失败，已丢弃排队中的纠正。",
+      "discarded_exhausted": "因续跑次数过多，已丢弃排队中的纠正。",
+      "discarded_hitl": "因等待你的回复，已丢弃排队中的纠正。"
+    },
     "runtime": {
       "disabled": "频道已停用",
       "unregistered": "未注册",

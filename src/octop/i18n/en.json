@@ -667,6 +667,20 @@
   "channel": {
     "tool_hint_start": "🔧 Calling tool: {tool_name}",
     "tool_hint_end": "✅ {tool_name} done",
+    "steer": {
+      "ack_steered": "↪ Steered into current run. I'll adjust using your correction when the run reaches the next safe point.",
+      "reject_attachments": "Attachments cannot steer the current run. Send text only, or wait until it finishes.",
+      "reject_queue_full": "Too many corrections are already queued for this run. Try again after it finishes.",
+      "reject_input_too_large": "That correction is too large to steer into the current run.",
+      "reject_hitl_paused": "A tool approval is pending — finish that first, then send your correction.",
+      "reject_empty": "Empty message — nothing was queued.",
+      "reject_not_steerable": "The current run cannot accept a correction right now.",
+      "reject_generic": "Could not queue that correction for the current run.",
+      "discarded_cancelled": "Queued corrections were discarded because the run was stopped.",
+      "discarded_failed": "Queued corrections were discarded because the run failed.",
+      "discarded_exhausted": "Queued corrections were discarded after too many continuations.",
+      "discarded_hitl": "Queued corrections were discarded while waiting for your reply."
+    },
     "runtime": {
       "disabled": "Channel disabled",
       "unregistered": "Not registered",

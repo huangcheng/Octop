@@ -107,7 +107,18 @@ class SteerAdmitReject:
     gateway_class: bool = False
 
 
+@dataclass(frozen=True)
+class SteerAdmitIdle:
+    """Busy-path fence: coordinator is no longer active; caller must enqueue a normal turn."""
+
+    status: Literal["idle"] = "idle"
+
+
 AdmitResult = SteerAdmitOk | SteerAdmitReject
+AdmitOrIdleResult = SteerAdmitOk | SteerAdmitReject | SteerAdmitIdle
+
+# Inbound metadata: pre-lock IM steer handled this message; processor must skip a new agent turn.
+SKIP_AGENT_TURN_META = "octop_skip_agent_turn"
 
 
 def preview_text(text: str, *, limit: int = STEER_PREVIEW_CHARS) -> str:

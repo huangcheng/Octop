@@ -30,7 +30,8 @@ from octop.infra.gateway.process.response_mode import (
     qq_channel_response_mode,
 )
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher, build_default_dispatcher
-from octop.infra.gateway.steer import SteerCoordinator
+from octop.infra.gateway.steer import ImSteerAckDebouncer, SteerCoordinator, try_admit_im_steer
+from octop.infra.gateway.steer.im_busy import ImBusyOutcome, format_discard_ack
 from octop.infra.gateway.threads import ThreadRegistry
 from octop.infra.gateway.ws import (
     WS_CHANNEL_ID,
@@ -122,6 +123,7 @@ class Gateway:
         self._ws_hub = WebSocketHub()
         self._cli_hub = CliHub()
         self._steer = SteerCoordinator()
+        self._im_steer_acks = ImSteerAckDebouncer()
         self._ws_channel: WebSocketChannel | None = None
         self._cli_channel: CliChannel | None = None
         self._runtime_status: dict[str, ChannelRuntimeStatus] = {}
@@ -248,7 +250,8 @@ class Gateway:
         )
 
         self._channel_manager = ChannelManager(channels={})
-        self._channel_manager.set_pre_lock_handler(self._preempt_cancel_on_stop)
+        # Pre-session-lock hook: /stop preempt + IM soft-steer admit (skip second turn).
+        self._channel_manager.set_pre_lock_handler(self._pre_session_lock)
         await self._channel_manager.start()
 
         self._ws_channel = WebSocketChannel(
@@ -511,6 +514,119 @@ class Gateway:
         if self._channel_manager is None:
             raise RuntimeError("gateway not booted")
         return self._channel_manager
+
+    async def _pre_session_lock(self, channel_id: str, message: Any) -> None:
+        """Before the session lock: preempt ``/stop`` and soft-steer busy IM text.
+
+        ChannelManager has no abort-enqueue API; this hook runs after dequeue and
+        before ``handle_inbound``. Successful steers set ``octop_skip_agent_turn``
+        so the processor does not start a second harness turn.
+        """
+        from octop.infra.gateway.process.message_keys import session_key_from_message
+        from octop.infra.gateway.slash.parser import parse_slash
+        from octop.infra.utils.locale import resolve_user_locale
+
+        channel_type = str(getattr(message, "channel_type", "") or "")
+        if ThreadRegistry.is_virtual_channel(channel_type):
+            # Dashboard/CLI own steer on their WS path; only /stop preempt applies
+            # for virtual channels when they share this manager.
+            await self._preempt_cancel_on_stop(channel_id, message)
+            return
+
+        agent_id = getattr(message, "tenant_id", None) or ""
+        if not isinstance(agent_id, str) or not agent_id.strip():
+            return
+        agent_id = agent_id.strip()
+
+        session_key = session_key_from_message(message, agent_id=agent_id)
+        thread_id = self._thread_registry.get_bound_thread_id(session_key)
+
+        text = getattr(message, "text", None)
+        cmd = parse_slash(text if isinstance(text, str) else None)
+        if cmd is not None and cmd.name in ("stop", "cancel"):
+            # Always cancel_stream when a thread is bound — HITL resume paths may
+            # stream without steer state. Do not mark_skip: slash /stop must still
+            # confirm to the user (idle and active alike).
+            if thread_id:
+                self._agent_manager.cancel_stream(agent_id, thread_id)
+                if self._steer.is_active(thread_id):
+                    self._steer.mark_cancelling(thread_id)
+                    # Always end_turn after discard so a non-empty queue cannot leave
+                    # phase stuck in "cancelling" with no processor left to clean up.
+                    discarded = self._steer.discard(thread_id, reason="turn_cancelled")
+                    self._steer.end_turn(thread_id, failed=False)
+                    if discarded is not None:
+                        try:
+                            agent_row = self._agent_manager.get_row(agent_id)
+                            raw_uid = agent_row.user_id if agent_row is not None else None
+                            user_id = raw_uid if isinstance(raw_uid, int) and raw_uid > 0 else 0
+                            msg_meta = getattr(message, "metadata", None)
+                            locale = resolve_user_locale(
+                                user_repo=self._repos.user_repo,
+                                user_id=user_id,
+                                channel_type=channel_type,
+                                metadata=msg_meta if isinstance(msg_meta, dict) else None,
+                            )
+                            ack = format_discard_ack(discarded.reason, str(locale))
+                            subject = getattr(message, "channel_subject", None)
+                            if subject is not None:
+                                await self.push_text(channel_type, channel_id, subject, ack)
+                        except Exception:
+                            logger.exception(
+                                "im steer discard ack failed channel=%s thread=%s",
+                                channel_id,
+                                thread_id,
+                            )
+                logger.info(
+                    "preempt cancel: agent=%s thread=%s cmd=/%s",
+                    agent_id,
+                    thread_id,
+                    cmd.name,
+                )
+            return
+
+        if thread_id is None:
+            return
+
+        # HITL-paused turns must not steer/skip: plain-text answers resume ask.
+        if self._steer.is_hitl_paused(thread_id):
+            return
+        # Idle threads never admit — skip locale/DB work on the common path.
+        if not self._steer.is_active(thread_id):
+            return
+
+        agent_row = self._agent_manager.get_row(agent_id)
+        raw_uid = agent_row.user_id if agent_row is not None else None
+        user_id = raw_uid if isinstance(raw_uid, int) and raw_uid > 0 else 0
+        msg_meta = getattr(message, "metadata", None)
+        locale = resolve_user_locale(
+            user_repo=self._repos.user_repo,
+            user_id=user_id,
+            channel_type=channel_type,
+            metadata=msg_meta if isinstance(msg_meta, dict) else None,
+        )
+        result = try_admit_im_steer(
+            steer=self._steer,
+            message=message,
+            thread_id=thread_id,
+            session_key=session_key,
+            locale=str(locale),
+            debouncer=self._im_steer_acks,
+            hitl_paused=False,
+        )
+        if result.outcome != ImBusyOutcome.BUSY_HANDLED:
+            return
+        if result.ack_text:
+            try:
+                subject = getattr(message, "channel_subject", None)
+                if subject is not None:
+                    await self.push_text(channel_type, channel_id, subject, result.ack_text)
+            except Exception:
+                logger.exception(
+                    "im steer ack send failed channel=%s thread=%s",
+                    channel_id,
+                    thread_id,
+                )
 
     async def _preempt_cancel_on_stop(self, _channel_id: str, message: Any) -> None:
         """Signal harness cancel for ``/stop`` / ``/cancel`` before the session lock.

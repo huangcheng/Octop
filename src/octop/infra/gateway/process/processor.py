@@ -73,6 +73,7 @@ from octop.infra.gateway.slash.catalog import HITL_APPROVAL_COMMANDS, spec_for
 from octop.infra.gateway.slash.ctx import SlashCtx, build_slash_ctx
 from octop.infra.gateway.slash.parser import parse_slash
 from octop.infra.gateway.slash.runner import try_handle_slash
+from octop.infra.gateway.threads import ThreadRegistry
 from octop.infra.history.projection import (
     TurnHistoryTracker,
     message_inputs,
@@ -94,7 +95,6 @@ if TYPE_CHECKING:
     from octop.infra.db.repos.connectors import ConnectorRepo
     from octop.infra.db.repos.users import UserRepo
     from octop.infra.gateway.slash.dispatcher import SlashDispatcher
-    from octop.infra.gateway.threads import ThreadRegistry
 
 logger = logging.getLogger(__name__)
 install_harness_hitl_compat()
@@ -609,9 +609,16 @@ class GlobalProcessor:
     # -- IM channel entry (MessageEvent stream) --------------------------------
 
     async def __call__(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
+        from octop.infra.gateway.steer import should_skip_agent_turn  # noqa: PLC0415
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("messages_total")
+
+        # IM soft-steer /stop: pre-lock handler admitted or cancelled; do not start
+        # a second harness turn for this dequeued payload.
+        if should_skip_agent_turn(msg):
+            yield MessageEvent.completed()
+            return
 
         agent_id = msg.tenant_id or ""
         if not agent_id:
@@ -828,73 +835,173 @@ class GlobalProcessor:
         )
 
         yield MessageEvent.typing()
-        stream_ok = False
-        hitl_paused = False
-        persist_failed_turn = False
-        usage_tracker = UsageTracker()
-        history_tracker = await self._begin_history(agent_id, thread_id, request)
-        projection_state = StreamProjectionState()
+
+        from octop.infra.gateway.steer.coordinator import (  # noqa: PLC0415
+            DiscardBundle,
+            DrainBundle,
+        )
+        from octop.infra.gateway.steer.im_busy import format_discard_ack  # noqa: PLC0415
+        from octop.infra.gateway.steer.types import STEER_DELIMITER  # noqa: PLC0415
+
+        steer = getattr(self._gateway, "steer", None) if self._gateway is not None else None
+        im_steerable = steer is not None and not ThreadRegistry.is_virtual_channel(channel_type)
+        if im_steerable:
+            assert steer is not None
+            steer.begin_turn(thread_id)
+
+        current_request = request
+        title_source = msg.text
+        overall_failed = False
+        overall_hitl_paused = False
+        discard_notice: str | None = None
         try:
-            async for ev in project_stream(
-                self._agent_manager,
-                agent_id,
-                request,
-                media_backend=media_backend,
-                usage_tracker=usage_tracker,
-                history_tracker=history_tracker,
-                locale=locale,
-                projection_state=projection_state,
-                hitl_coordinator=self._hitl,
-                hitl_ctx=HitlStreamContext(
-                    thread_id=thread_id,
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    session_key=session_key,
-                    channel_type=channel_type,
-                ),
-            ):
-                yield ev
-            stream_ok = True
-            hitl_paused = projection_state.hitl_paused
-        except Exception as exc:
-            await self._record_stream_error(
-                user_id=user_id, agent_id=agent_id, thread_id=thread_id, exc=exc
-            )
-            message, error_code = _stream_error(exc, locale)
-            if error_code:
-                message = f"[{error_code}] {message}"
-            persist_failed_turn = True
-            history_tracker.observe(
-                {
-                    "type": "error",
-                    "message": message,
-                    **({"error_code": error_code} if error_code else {}),
-                }
-            )
-            yield MessageEvent.error_event(message)
-        else:
-            if stream_ok and not hitl_paused:
-                self._touch_thread_after_turn(thread_id, msg.text)
-                self._record_turn_usage(
-                    agent_id=agent_id,
-                    user_id=user_id,
-                    thread_id=thread_id,
-                    usage=usage_tracker.usage,
-                )
-                await self._record_turn_history(thread_id, history_tracker)
-                hint = self._plan_ready_hint(thread_id, locale)
-                if hint:
-                    yield MessageEvent(
-                        type=MessageEventType.MESSAGE,
-                        content=[TextContent(text=hint)],
+            while True:
+                stream_ok = False
+                hitl_paused = False
+                persist_failed_turn = False
+                usage_tracker = UsageTracker()
+                history_tracker = await self._begin_history(agent_id, thread_id, current_request)
+                projection_state = StreamProjectionState()
+                try:
+                    # IM v1 drains at natural turn end (after tools or pure text).
+                    # Tool-boundary mid-stream preempt stays on Dashboard WS until the
+                    # shared runner exposes the same cancel seam for MessageEvent.
+                    async for ev in project_stream(
+                        self._agent_manager,
+                        agent_id,
+                        current_request,
+                        media_backend=media_backend,
+                        usage_tracker=usage_tracker,
+                        history_tracker=history_tracker,
+                        locale=locale,
+                        projection_state=projection_state,
+                        hitl_coordinator=self._hitl,
+                        hitl_ctx=HitlStreamContext(
+                            thread_id=thread_id,
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            session_key=session_key,
+                            channel_type=channel_type,
+                        ),
+                    ):
+                        yield ev
+                    stream_ok = True
+                    hitl_paused = projection_state.hitl_paused
+                except Exception as exc:
+                    await self._record_stream_error(
+                        user_id=user_id, agent_id=agent_id, thread_id=thread_id, exc=exc
                     )
-        finally:
-            if persist_failed_turn or (not stream_ok and not hitl_paused):
-                await self._persist_incomplete_turn(
-                    thread_id, history_tracker, title_source=msg.text
+                    message, error_code = _stream_error(exc, locale)
+                    if error_code:
+                        message = f"[{error_code}] {message}"
+                    persist_failed_turn = True
+                    overall_failed = True
+                    history_tracker.observe(
+                        {
+                            "type": "error",
+                            "message": message,
+                            **({"error_code": error_code} if error_code else {}),
+                        }
+                    )
+                    yield MessageEvent.error_event(message)
+                else:
+                    if stream_ok and not hitl_paused:
+                        self._touch_thread_after_turn(thread_id, title_source)
+                        self._record_turn_usage(
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            thread_id=thread_id,
+                            usage=usage_tracker.usage,
+                        )
+                        await self._record_turn_history(thread_id, history_tracker)
+                        hint = self._plan_ready_hint(thread_id, locale)
+                        if hint:
+                            yield MessageEvent(
+                                type=MessageEventType.MESSAGE,
+                                content=[TextContent(text=hint)],
+                            )
+                    if hitl_paused:
+                        overall_hitl_paused = True
+                finally:
+                    if persist_failed_turn or (not stream_ok and not hitl_paused):
+                        await self._persist_incomplete_turn(
+                            thread_id, history_tracker, title_source=title_source
+                        )
+                    else:
+                        await self._finish_history(
+                            history_tracker, completed=stream_ok and not hitl_paused
+                        )
+
+                if not im_steerable or steer is None or hitl_paused or not stream_ok:
+                    break
+
+                outcome = steer.drain_for_continuation(thread_id)
+                if outcome is None:
+                    break
+                if isinstance(outcome, DiscardBundle):
+                    discard_notice = format_discard_ack(outcome.reason, locale)
+                    break
+                if not isinstance(outcome, DrainBundle):
+                    break
+
+                # Continue the same logical turn with coalesced steer text.
+                title_source = outcome.text
+                cont_kwargs = dict(message_kwargs or {})
+                # Text-only steer must not reuse the original turn's media kwargs.
+                cont_kwargs.pop(INBOUND_ATTACHMENTS_KEY, None)
+                cont_kwargs["steer_continuation"] = True
+                cont_kwargs["steer_delimiter"] = STEER_DELIMITER
+                current_request = build_harness_request(
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    session_key=session_key,
+                    source=f"{msg.channel_type}/{msg.channel_id}",
+                    text=outcome.text,
+                    model=model_ref,
+                    message_kwargs=cont_kwargs,
                 )
-            else:
-                await self._finish_history(history_tracker, completed=stream_ok and not hitl_paused)
+                self.teams.stamp_host_runtime(current_request, agent_id)
+                self._attach_turn_knowledge_config(
+                    current_request,
+                    user_id=user_id,
+                    is_admin=False,
+                    explicit_ids=None,
+                    locale=locale,
+                    agent_id=agent_id,
+                )
+                current_request = self._stamp_turn_conversation_mode(
+                    current_request,
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    meta=None,
+                    user_text=outcome.text,
+                    mcp_servers=mcp_servers,
+                    locale=locale,
+                )
+        finally:
+            if im_steerable and steer is not None:
+                if overall_hitl_paused and not overall_failed:
+                    # IM has no take_hitl_pending (dashboard SSE only). Parking
+                    # would silently drop already-acked steers on the next begin_turn.
+                    discarded = (
+                        steer.discard(thread_id, reason="hitl_paused")
+                        if steer.has_pending(thread_id)
+                        else None
+                    )
+                    steer.end_turn(thread_id, failed=False)
+                    if discard_notice is None and discarded is not None:
+                        discard_notice = format_discard_ack(discarded.reason, locale)
+                else:
+                    end_bundle = steer.end_turn(thread_id, failed=overall_failed)
+                    if discard_notice is None and isinstance(end_bundle, DiscardBundle):
+                        discard_notice = format_discard_ack(end_bundle.reason, locale)
+
+        if discard_notice:
+            yield MessageEvent(
+                type=MessageEventType.MESSAGE,
+                content=[TextContent(text=discard_notice)],
+            )
         yield MessageEvent.completed()
 
     def cancel_agent_stream(self, agent_id: str, thread_id: str) -> None:

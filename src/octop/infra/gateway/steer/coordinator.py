@@ -20,10 +20,12 @@ from octop.infra.gateway.steer.types import (
     STEER_DEPTH_CAP,
     STEER_TEXT_CAP_BYTES,
     STEERABLE_PHASES,
+    AdmitOrIdleResult,
     AdmitResult,
     Delivery,
     DiscardReason,
     PendingSteer,
+    SteerAdmitIdle,
     SteerAdmitOk,
     SteerAdmitReject,
     TurnPhase,
@@ -344,6 +346,34 @@ class SteerCoordinator:
                 seq=seq,
                 emit_queued=True,
             )
+
+    def admit_or_idle(
+        self,
+        thread_id: str,
+        *,
+        text: str,
+        client_pending_id: str | None,
+        expected_turn_id: str | None,
+        delivery: Delivery = "auto",
+        hitl_paused: bool = False,
+    ) -> AdmitOrIdleResult:
+        """Atomic busy admit under the coordinator lock.
+
+        Returns ``SteerAdmitIdle`` when there is no active turn (caller must
+        enqueue a normal turn — never ack-then-drop). Never returns bare
+        ``None`` so IM call sites cannot confuse idle with a coding error.
+        """
+        result = self.admit(
+            thread_id,
+            text=text,
+            client_pending_id=client_pending_id,
+            expected_turn_id=expected_turn_id,
+            delivery=delivery,
+            hitl_paused=hitl_paused,
+        )
+        if result is None:
+            return SteerAdmitIdle()
+        return result
 
     def remove(
         self,
