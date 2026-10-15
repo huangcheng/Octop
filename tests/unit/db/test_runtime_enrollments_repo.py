@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from pathlib import Path
 
@@ -10,7 +9,11 @@ import pytest
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
-from octop.infra.db.repos.runtime_enrollments import RuntimeEnrollmentRepo
+from octop.infra.db.repos.runtime_enrollments import (
+    EnrollmentConflictError,
+    EnrollmentQuotaError,
+    RuntimeEnrollmentRepo,
+)
 
 
 @pytest.fixture
@@ -158,10 +161,40 @@ def test_display_name_unique_per_user(db: SqlitePool) -> None:
         display_name="Same",
         key_hash="h2",
     )
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(EnrollmentConflictError):
         repo.create(
             enrollment_id="e-u1b",
             owner_user_id=1,
             display_name="Same",
             key_hash="h3",
         )
+
+
+def test_active_cap_enforced_atomically(db: SqlitePool) -> None:
+    repo = RuntimeEnrollmentRepo(db)
+    for i in range(3):
+        repo.create(
+            enrollment_id=f"cap-{i}",
+            owner_user_id=1,
+            display_name=f"m{i}",
+            key_hash=f"k{i}",
+            active_cap=3,
+        )
+    with pytest.raises(EnrollmentQuotaError):
+        repo.create(
+            enrollment_id="cap-3",
+            owner_user_id=1,
+            display_name="m3",
+            key_hash="k3",
+            active_cap=3,
+        )
+    # Revoked rows do not count toward the cap.
+    repo.revoke("cap-0")
+    row = repo.create(
+        enrollment_id="cap-4",
+        owner_user_id=1,
+        display_name="m4",
+        key_hash="k4",
+        active_cap=3,
+    )
+    assert row.enrollment_id == "cap-4"

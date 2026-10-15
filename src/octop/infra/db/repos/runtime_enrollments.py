@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 
 from octop.infra.db.pool import DatabasePool
@@ -10,6 +11,25 @@ from octop.infra.db.repos._base import DbRow, map_rows, now_ts
 # Rotation overlap window: the old key stays valid until the new key is used
 # or this many seconds pass (spec §9).
 ROTATION_WINDOW_SECONDS = 24 * 60 * 60
+
+try:
+    from psycopg import errors as pg_errors
+except ImportError:  # pragma: no cover - optional PostgreSQL driver
+    pg_errors = None  # type: ignore[assignment]
+
+
+class EnrollmentConflictError(Exception):
+    """UNIQUE(user_id, display_name) violation — the DB is the true guard."""
+
+
+class EnrollmentQuotaError(Exception):
+    """Active-enrollment cap reached; enforced atomically at insert time."""
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    if isinstance(exc, sqlite3.IntegrityError):
+        return "unique" in str(exc).lower()
+    return pg_errors is not None and isinstance(exc, pg_errors.UniqueViolation)
 
 
 @dataclass(frozen=True)
@@ -75,28 +95,65 @@ class RuntimeEnrollmentRepo:
         allow_exec: bool = False,
         default_workspace_base: str | None = None,
         status: str = "active",
+        active_cap: int | None = None,
     ) -> RuntimeEnrollmentRow:
         ts = now_ts()
-        with self._db.transaction() as conn:
-            conn.execute(
-                "INSERT INTO runtime_enrollments("
-                "enrollment_id, user_id, display_name, key_hash, allow_exec, "
-                "default_workspace_base, status, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    enrollment_id,
-                    owner_user_id,
-                    display_name,
-                    key_hash,
-                    1 if allow_exec else 0,
-                    (default_workspace_base or "").strip() or None,
-                    status,
-                    ts,
-                    ts,
-                ),
-            )
+        try:
+            # Single-statement conditional insert keeps the active-row cap atomic
+            # on both dialects (SQLite single-writer; PG statement-level snapshot).
+            if active_cap is None:
+                with self._db.transaction() as conn:
+                    conn.execute(
+                        "INSERT INTO runtime_enrollments("
+                        "enrollment_id, user_id, display_name, key_hash, allow_exec, "
+                        "default_workspace_base, status, created_at, updated_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            enrollment_id,
+                            owner_user_id,
+                            display_name,
+                            key_hash,
+                            1 if allow_exec else 0,
+                            (default_workspace_base or "").strip() or None,
+                            status,
+                            ts,
+                            ts,
+                        ),
+                    )
+            else:
+                with self._db.transaction() as conn:
+                    cur = conn.execute(
+                        "INSERT INTO runtime_enrollments("
+                        "enrollment_id, user_id, display_name, key_hash, allow_exec, "
+                        "default_workspace_base, status, created_at, updated_at"
+                        ") SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ("
+                        "SELECT COUNT(*) FROM runtime_enrollments "
+                        "WHERE user_id = ? AND status = 'active') < ?",
+                        (
+                            enrollment_id,
+                            owner_user_id,
+                            display_name,
+                            key_hash,
+                            1 if allow_exec else 0,
+                            (default_workspace_base or "").strip() or None,
+                            status,
+                            ts,
+                            ts,
+                            owner_user_id,
+                            active_cap,
+                        ),
+                    )
+                    if cur.rowcount == 0:
+                        raise EnrollmentQuotaError(f"active enrollment cap reached: {active_cap}")
+        except Exception as exc:  # noqa: BLE001 - dialect-specific integrity errors
+            if isinstance(exc, EnrollmentQuotaError):
+                raise
+            if _is_unique_violation(exc):
+                raise EnrollmentConflictError(str(exc)) from exc
+            raise
         row = self.get_by_enrollment_id(enrollment_id)
-        assert row is not None  # noqa: S101
+        if row is None:
+            raise EnrollmentConflictError(f"enrollment {enrollment_id} vanished")
         return row
 
     def get_by_enrollment_id(self, enrollment_id: str) -> RuntimeEnrollmentRow | None:

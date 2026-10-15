@@ -581,5 +581,9 @@ class ChunkBuffer:
             complete = False
         if complete:
             last = max(self._chunks)
-            return b"".join(self._chunks.get(i, b"") for i in range(last + 1))
+            if len(self._chunks) != last + 1:
+                raise ProtocolFormatError(
+                    f"gap in chunks: have {sorted(self._chunks)}, expected 0..{last}"
+                )
+            return b"".join(self._chunks[i] for i in range(last + 1))
         return None

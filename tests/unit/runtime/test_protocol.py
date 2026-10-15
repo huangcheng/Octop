@@ -355,6 +355,14 @@ def test_chunk_buffer_unknown_total_completes_only_via_marker() -> None:
     assert buf.truncated
 
 
+def test_chunk_buffer_truncation_with_gap_raises() -> None:
+    buf = ChunkBuffer()
+    assert buf.add(0, -1, b"aa") is None
+    assert buf.add(2, -1, b"cc") is None
+    with pytest.raises(ProtocolFormatError):
+        buf.add(3, -1, b"dd", truncated=True)
+
+
 def test_chunk_buffer_rejects_bad_input() -> None:
     buf = ChunkBuffer()
     with pytest.raises(ProtocolFormatError):
