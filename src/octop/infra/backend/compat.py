@@ -43,6 +43,11 @@ def is_remote_backend_spec(spec: Any) -> bool:
     return isinstance(spec, dict) and str(spec.get("type") or "").lower() in _REMOTE_SPEC_TYPES
 
 
+def is_remote_runtime_spec(spec: Any) -> bool:
+    """True when *spec* is a ``remote_runtime`` dict proxied by the hub (§7.2)."""
+    return isinstance(spec, dict) and str(spec.get("type") or "").lower() == "remote_runtime"
+
+
 def adapt_backend_protocol(backend: Any) -> Any:
     """Return *backend*, wrapped when it only implements the older protocol."""
     if isinstance(backend, _LegacyProtocolBackend):

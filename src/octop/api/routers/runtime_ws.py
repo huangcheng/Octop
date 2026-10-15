@@ -381,6 +381,9 @@ async def runtime_ws(websocket: WebSocket) -> None:
                 await old.close_with(CLOSE_SUPERSEDED, "superseded")
 
     registry.register(session)
+    # The session loop owns the socket from here on: bind the transport send
+    # hook (plus the owning loop) so hub-side backends can push frames.
+    session.set_sender(websocket.send_text)
     limiter.refund_dial(client_ip, enrollment_id)  # successful handshakes are exempt
     with contextlib.suppress(Exception):
         repo.mark_seen(row.enrollment_id, machine_metadata=_machine_metadata(hello))
@@ -397,6 +400,7 @@ async def runtime_ws(websocket: WebSocket) -> None:
         logger.exception("runtime session loop crashed: %s", row.enrollment_id)
     finally:
         registry.remove(session)
+        session.set_sender(None)
         await session.close_with(session.close_code or 1005, session.close_reason or "closed")
         if session.close_code == CLOSE_SUPERSEDED:
             # Supersession telemetry: which live connection lost the race.

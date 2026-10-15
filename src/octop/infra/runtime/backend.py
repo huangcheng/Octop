@@ -123,7 +123,7 @@ from octop.infra.utils.ulid import new_ulid
 
 if TYPE_CHECKING:
     from octop.infra.runtime.protocol import FrameEnvelope
-    from octop.infra.runtime.registry import RuntimeSession
+    from octop.infra.runtime.registry import RuntimeSession, RuntimeSessionRegistry
 
 logger = logging.getLogger("octop.runtime.backend")
 
@@ -222,6 +222,81 @@ class SessionLink:
 #: Current live link for an enrollment, or ``None`` when offline.  Must be a
 #: cheap, thread-safe sync callable (e.g. a closure over the session registry).
 SessionProvider = Callable[[], SessionLink | None]
+
+
+class RuntimeBackendHub:
+    """Per-process stable :class:`RemoteRuntimeBackend` cache (spec §7.2).
+
+    Agents must hold ONE stable proxy per (enrollment, content root) so the
+    in-flight future set survives agent reloads and dies only on session
+    swaps.  The hub keeps those proxies bounded; revocation is caught at
+    spec-finalize time (the manager re-resolves specs on every start) plus a
+    cheap enrollment-status read at cache-miss construction.
+    """
+
+    #: Bound on cached proxies (one per enrollment × content root).
+    MAX_CACHED_BACKENDS = 128
+
+    def __init__(
+        self,
+        registry: RuntimeSessionRegistry,
+        *,
+        enrollment_repo: Any | None = None,
+    ) -> None:
+        self._registry = registry
+        self._repo = enrollment_repo
+        self._backends: dict[tuple[str, str], RemoteRuntimeBackend] = {}
+
+    def link_for(self, enrollment_id: str) -> SessionLink | None:
+        """Live link for *enrollment_id*; the newest generation wins."""
+        session = self._registry.get(enrollment_id)
+        if session is None or not session.is_live:
+            return None
+        send = session.send_text
+        if send is None or session.loop is None:
+            return None  # registered but the session loop does not own the socket yet
+        return SessionLink(session, send, session.loop)
+
+    def backend_for(
+        self,
+        enrollment_id: str,
+        *,
+        allow_exec: bool,
+        workspace_base: str,
+        agent_root: str = "auto",
+        agent_id: str | None = None,
+    ) -> RemoteRuntimeBackend:
+        """Cached stable proxy for *enrollment_id* at the resolved content root."""
+        eid = str(enrollment_id)
+        content_root = resolve_content_root(workspace_base, agent_root, agent_id)
+        key = (eid, content_root)
+        cached = self._backends.get(key)
+        if cached is not None:
+            return cached
+        if self._repo is not None:
+            # Cache-miss only: closes the revoked-while-uncached window cheap.
+            # Later revocations are caught at spec-finalize time upstream.
+            row = self._repo.get_by_enrollment_id(eid)
+            if row is None:
+                raise OctopError(ErrorCode.NOT_FOUND, f"runtime enrollment {eid!r} not found")
+            if str(row.status) != "active":
+                raise OctopError(
+                    ErrorCode.RUNTIME_UNSUPPORTED,
+                    f"runtime enrollment {eid!r} is {row.status}",
+                )
+        backend = RemoteRuntimeBackend(
+            eid,
+            session_provider=partial(self.link_for, eid),
+            allow_exec=allow_exec,
+            workspace_base=workspace_base,
+            agent_root=agent_root,
+            agent_id=agent_id,
+        )
+        if len(self._backends) >= self.MAX_CACHED_BACKENDS:
+            oldest = next(iter(self._backends))
+            del self._backends[oldest]
+        self._backends[key] = backend
+        return backend
 
 
 class _IncomingCredit:

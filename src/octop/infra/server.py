@@ -27,6 +27,7 @@ from octop.infra.gateway.gateway import Gateway
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
 from octop.infra.proactive.service import ProactiveCareService
+from octop.infra.runtime.backend import RuntimeBackendHub
 from octop.infra.runtime.rate_limit import RuntimeRateLimiter
 from octop.infra.runtime.registry import RuntimeSessionRegistry
 from octop.infra.setup import password_file as _wizard_pw
@@ -421,13 +422,18 @@ class OctopServer:
         )
 
         configure_browser_idle_timeout(config.browser_idle_timeout_minutes)
-
+        runtime_registry = RuntimeSessionRegistry()
+        runtime_hub = RuntimeBackendHub(
+            runtime_registry,
+            enrollment_repo=self.services.repos.runtime_enrollment_repo,
+        )
         registry = AgentManager(
             repos=self.services.repos,
             paths=self.paths,
             config=config,
             expert_catalog=self.expert_catalog,
             plugin_manager=self.plugin_manager,
+            runtime_hub=runtime_hub,
         )
 
         from octop.infra.history.trajectory.live import TrajectoryLiveBus  # noqa: PLC0415
@@ -572,7 +578,7 @@ class OctopServer:
             trajectory_service=trajectory_service,
             history_archive=history_archive,
             bridge_manager=bridge_mgr,
-            runtime_registry=RuntimeSessionRegistry(),
+            runtime_registry=runtime_registry,
             runtime_rate_limiter=RuntimeRateLimiter(),
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415

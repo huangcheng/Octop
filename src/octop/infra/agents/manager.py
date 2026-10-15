@@ -93,6 +93,7 @@ if TYPE_CHECKING:
     from octop.infra.db.repos.agents import AgentRow
     from octop.infra.db.services import RepoBundle
     from octop.infra.proactive.scheduler import ProactiveCareScheduler
+    from octop.infra.runtime.backend import RuntimeBackendHub
     from octop.infra.utils.paths import PathLayout
 
 logger = logging.getLogger(__name__)
@@ -465,6 +466,7 @@ class AgentManager:
         config: OctopConfig | None = None,
         expert_catalog: ExpertCatalog | None = None,
         plugin_manager: PluginManager | None = None,
+        runtime_hub: RuntimeBackendHub | None = None,
     ) -> None:
         self._repos = repos
         self._paths = paths
@@ -473,6 +475,9 @@ class AgentManager:
         self._config = config or _OctopConfig()
         self._expert_catalog = expert_catalog
         self._plugin_manager = plugin_manager
+        # Hub-side remote_runtime backend cache; None outside a full server
+        # (unit tests) — remote_runtime agent backends then fail fast.
+        self._runtime_hub = runtime_hub
         self._cron_manager: CronManager | None = None
         self._proactive_scheduler: ProactiveCareScheduler | None = None
         self._team_processor: Any | None = None
@@ -3195,6 +3200,11 @@ class AgentManager:
         resolved = resolve_agent_backend_spec(
             backend_spec,
             repo=self._repos.storage_backend_repo,
+            enrollment_repo=self._repos.runtime_enrollment_repo,
+            # Spec §7.1 authorization: enrollments must belong to the agent's
+            # user; shared (ownerless) agents are bootstrap-admin scoped.
+            owner_user_id=row.user_id,
+            is_admin=row.user_id is None,
         )
         # Windows: the dashboard defaults local backends to root_dir "/", which
         # resolves to a drive other than the workspace and breaks path checks.
@@ -3264,12 +3274,40 @@ class AgentManager:
             }
         elif self._spec_is_opensandbox(backend):
             ensure_opensandbox_deps(allow_install=True)
-        from octop.infra.backend.compat import adapt_backend_protocol  # noqa: PLC0415
+        from octop.infra.backend.compat import (  # noqa: PLC0415
+            adapt_backend_protocol,
+            is_remote_runtime_spec,
+        )
 
+        if is_remote_runtime_spec(backend):
+            # Prebuilt stable proxy over the live runtime session (§7.2):
+            # harness resolve_backend has no remote_runtime kind — the hub
+            # owns the instance so in-flight futures survive reloads.
+            return BackendWorkspace(
+                adapt_backend_protocol(self._remote_runtime_backend(backend, row)),
+                workspace_dir,
+                system_files_path=system_files_path_from_config(cfg),
+            )
         return BackendWorkspace(
             adapt_backend_protocol(resolve_backend(backend, workspace_dir=workspace_dir)),
             workspace_dir,
             system_files_path=system_files_path_from_config(cfg),
+        )
+
+    def _remote_runtime_backend(self, spec: dict[str, Any], row: AgentRow) -> Any:
+        """Stable RemoteRuntimeBackend for a finalized remote_runtime spec."""
+        if self._runtime_hub is None:
+            raise OctopError(
+                ErrorCode.RUNTIME_UNSUPPORTED,
+                "remote_runtime backends require the runtime session hub "
+                "(available on single-process servers)",
+            )
+        return self._runtime_hub.backend_for(
+            str(spec.get("enrollment_id") or ""),
+            allow_exec=bool(spec.get("allow_exec")),
+            workspace_base=str(spec.get("workspace_base") or ""),
+            agent_root=str(spec.get("agent_root") or "auto"),
+            agent_id=row.agent_id,
         )
 
     async def _seed_expert_template(self, row: AgentRow, template_name: str) -> None:
@@ -3825,10 +3863,13 @@ class AgentManager:
         # OpenSandbox.create is not idempotent — reuse the instance already
         # wrapped by ``ws`` so start does not spawn a second remote sandbox.
         # The same reuse applies when the workspace wrap adapted an older
-        # read/ls surface (S3 / Postgres / COS / …) to ReadResult/LsResult.
+        # read/ls surface (S3 / Postgres / COS / …) to ReadResult/LsResult,
+        # and to the prebuilt remote_runtime proxy (a second instance would
+        # orphan the stable in-flight future set, spec §7.2).
         from octop.infra.backend.compat import (  # noqa: PLC0415
             is_adapted_backend,
             is_remote_backend_spec,
+            is_remote_runtime_spec,
         )
 
         harness_backend: Any = (
@@ -3837,6 +3878,7 @@ class AgentManager:
                 self._spec_is_opensandbox(backend)
                 or is_adapted_backend(ws.backend)
                 or is_remote_backend_spec(backend)
+                or is_remote_runtime_spec(backend)
             )
             else backend
         )

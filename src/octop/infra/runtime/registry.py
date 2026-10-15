@@ -7,13 +7,15 @@ one live session exists. Memory stays bounded by the number of active
 enrollments: sessions are removed on close, and during a key-rotation overlap
 at most two sessions coexist per enrollment (current key + previous key).
 
-Single event loop assumed; all registry operations are non-blocking.
+Single event loop assumed for mutations; presence reads are additionally
+thread-safe because agent backends probe them from worker threads.
 """
 
 from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -46,6 +48,9 @@ _session_seq = itertools.count(1)
 
 #: Transport close hook injected by the endpoint that owns the session.
 CloseImpl = Callable[[int, str], Awaitable[None]]
+#: Transport text-send hook; the endpoint owning the socket binds it once the
+#: hub session loop starts dispatching (None until then).
+SendText = Callable[[str], Awaitable[None]]
 #: Pluggable per-frame dispatch callback (wave 3/4 plug exec/fs handlers).
 FrameHandler = Callable[["FrameEnvelope"], Awaitable[None]]
 
@@ -79,12 +84,27 @@ class RuntimeSession:
         self.closed = asyncio.Event()
         self.close_code: int | None = None
         self.close_reason = ""
+        #: Event loop that owns the socket; captured when the send hook binds.
+        #: Sync backend ops hop onto it with ``run_coroutine_threadsafe``.
+        self.loop: asyncio.AbstractEventLoop | None = None
         self._close_impl = close_impl
+        self._send_text: SendText | None = None
         self._frame_handler: FrameHandler | None = None
 
     @property
     def is_live(self) -> bool:
         return not self.closed.is_set()
+
+    @property
+    def send_text(self) -> SendText | None:
+        """Transport send hook, or ``None`` while no session loop owns the socket."""
+        return self._send_text
+
+    def set_sender(self, send_text: SendText | None) -> None:
+        """Bind (or clear) the transport send hook; binding captures the owning loop."""
+        if send_text is not None:
+            self.loop = asyncio.get_running_loop()
+        self._send_text = send_text
 
     @property
     def frame_handler(self) -> FrameHandler | None:
@@ -117,43 +137,54 @@ class RuntimeSessionRegistry:
 
     def __init__(self) -> None:
         self._by_enrollment: dict[str, dict[str, RuntimeSession]] = {}
+        # Registry mutations run on the hub loop while agent backends probe
+        # presence from worker threads (sync op bridging) — reads must not
+        # iterate a dict that is being mutated on the loop.
+        self._lock = threading.RLock()
 
     def register(self, session: RuntimeSession) -> None:
-        self._by_enrollment.setdefault(session.enrollment_id, {})[session.session_id] = session
-        if len(self) > self._SWEEP_THRESHOLD:
-            self._sweep()
+        with self._lock:
+            self._by_enrollment.setdefault(session.enrollment_id, {})[session.session_id] = session
+            if len(self) > self._SWEEP_THRESHOLD:
+                self._sweep()
 
     def get(self, enrollment_id: str) -> RuntimeSession | None:
         """The most recently connected live session for the enrollment, if any."""
-        sessions = self._live_sessions(enrollment_id)
+        with self._lock:
+            sessions = self._live_sessions(enrollment_id)
         if not sessions:
             return None
         return max(sessions, key=lambda s: s.connected_at)
 
     def sessions(self, enrollment_id: str) -> list[RuntimeSession]:
         """All live sessions for the enrollment (both key slots during overlap)."""
-        return self._live_sessions(enrollment_id)
+        with self._lock:
+            return self._live_sessions(enrollment_id)
 
     def remove(self, session: RuntimeSession) -> None:
-        bucket = self._by_enrollment.get(session.enrollment_id)
-        if bucket is None:
-            return
-        bucket.pop(session.session_id, None)
-        if not bucket:
-            self._by_enrollment.pop(session.enrollment_id, None)
+        with self._lock:
+            bucket = self._by_enrollment.get(session.enrollment_id)
+            if bucket is None:
+                return
+            bucket.pop(session.session_id, None)
+            if not bucket:
+                self._by_enrollment.pop(session.enrollment_id, None)
 
     def online(self, enrollment_id: str) -> bool:
-        return bool(self._live_sessions(enrollment_id))
+        with self._lock:
+            return bool(self._live_sessions(enrollment_id))
 
     def online_enrollment_ids(self) -> set[str]:
-        return {
-            eid
-            for eid, bucket in self._by_enrollment.items()
-            if any(s.is_live for s in bucket.values())
-        }
+        with self._lock:
+            return {
+                eid
+                for eid, bucket in self._by_enrollment.items()
+                if any(s.is_live for s in bucket.values())
+            }
 
     def __len__(self) -> int:
-        return sum(len(bucket) for bucket in self._by_enrollment.values())
+        with self._lock:
+            return sum(len(bucket) for bucket in self._by_enrollment.values())
 
     def _live_sessions(self, enrollment_id: str) -> list[RuntimeSession]:
         bucket = self._by_enrollment.get(enrollment_id)
