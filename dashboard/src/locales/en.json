@@ -220,7 +220,11 @@
     "TEAM_NOT_SHAREABLE": "Teams cannot be shared in this version.",
     "LOCAL_DOWNLOAD_UNAVAILABLE": "Saving to the host Downloads folder is only available when Octop is opened on this computer.",
     "SKILL_PACKAGE_COPY_DENIED": "The creator of this skill package has disabled copying its skills.",
-    "SKILL_PACKAGE_LOCKED": "This skill was copied from a locked skill package and cannot be edited in the workspace."
+    "SKILL_PACKAGE_LOCKED": "This skill was copied from a locked skill package and cannot be edited in the workspace.",
+    "RUNTIME_OFFLINE": "This remote machine is not connected. Try again once it is online.",
+    "RUNTIME_REVOKED": "This remote machine enrollment has been revoked.",
+    "RUNTIME_UNSUPPORTED": "This remote machine does not support the requested operation.",
+    "RUNTIME_ROTATION_PENDING": "A credential rotation is already pending for this machine. Use the new key or wait for it to expire."
   },
   "nav": {
     "chat": "Conversation",
