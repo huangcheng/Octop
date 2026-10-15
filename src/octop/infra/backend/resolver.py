@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from octop.infra.backend.adapter import row_to_backend_spec
+from octop.infra.errors import ErrorCode, OctopError
 
 
 def default_agent_backend_spec(workspace_dir: Path) -> dict[str, Any]:
@@ -80,8 +81,20 @@ def resolve_agent_backend_spec(
     spec: Any,
     *,
     repo: Any | None,
+    owner_user_id: int | None = None,
+    enrollment_repo: Any | None = None,
+    is_admin: bool = False,
 ) -> Any:
-    """Expand ``named`` refs (and composite trees) into harness-ready specs."""
+    """Expand ``named`` refs (and composite trees) into harness-ready specs.
+
+    ``remote_runtime`` specs are finalized against ``enrollment_repo``: the
+    referenced enrollment must exist, be active, and belong to
+    ``owner_user_id`` (admin bypass) — enforced here, at spec-expansion time
+    (spec §7.1 authorization).  The spec gains ``allow_exec`` (and a
+    workspace_base default) from the enrollment row so the pure
+    :func:`backend_spec_supports_execution` can gate execution without a
+    repo.  Without ``enrollment_repo`` the spec resolves execution-disabled.
+    """
     if spec is None:
         return None
     if not isinstance(spec, dict):
@@ -98,7 +111,13 @@ def resolve_agent_backend_spec(
         inner = row_to_backend_spec(row)
         if inner is None:
             raise ValueError(f"storage backend {name!r} is incomplete")
-        return resolve_agent_backend_spec(inner, repo=repo)
+        return resolve_agent_backend_spec(
+            inner,
+            repo=repo,
+            owner_user_id=owner_user_id,
+            enrollment_repo=enrollment_repo,
+            is_admin=is_admin,
+        )
 
     if kind == "composite":
         default = spec.get("default")
@@ -107,14 +126,41 @@ def resolve_agent_backend_spec(
         routes = spec.get("routes") or {}
         if not isinstance(routes, dict):
             raise ValueError("composite backend routes must be a dict")
-        return {
+        out: dict[str, Any] = {
             "type": "composite",
-            "default": resolve_agent_backend_spec(default, repo=repo),
+            "default": resolve_agent_backend_spec(
+                default,
+                repo=repo,
+                owner_user_id=owner_user_id,
+                enrollment_repo=enrollment_repo,
+                is_admin=is_admin,
+            ),
             "routes": {
-                str(prefix): resolve_agent_backend_spec(sub, repo=repo)
+                str(prefix): resolve_agent_backend_spec(
+                    sub,
+                    repo=repo,
+                    owner_user_id=owner_user_id,
+                    enrollment_repo=enrollment_repo,
+                    is_admin=is_admin,
+                )
                 for prefix, sub in routes.items()
             },
         }
+        exec_target = spec.get("exec_target")
+        if exec_target is not None:
+            # Octop-reserved key: which sub-backend receives ``execute``.
+            # deepagents composites always execute on their default, so the
+            # agent wiring wraps the harness-resolved composite in
+            # ExecTargetCompositeBackend (infra/runtime/backend.py); harness
+            # resolve_backend must never see the key (split_exec_target).
+            out["exec_target"] = resolve_agent_backend_spec(
+                exec_target,
+                repo=repo,
+                owner_user_id=owner_user_id,
+                enrollment_repo=enrollment_repo,
+                is_admin=is_admin,
+            )
+        return out
 
     cleaned = dict(spec)
     if kind not in ("named", "composite") and "name" in cleaned:
@@ -123,7 +169,64 @@ def resolve_agent_backend_spec(
         from octop.infra.backend.postgres_spec import normalize_postgres_spec
 
         return normalize_postgres_spec(cleaned)
+    if kind == "remote_runtime":
+        return _finalize_remote_runtime_spec(
+            cleaned,
+            owner_user_id=owner_user_id,
+            enrollment_repo=enrollment_repo,
+            is_admin=is_admin,
+        )
     return cleaned
+
+
+def _finalize_remote_runtime_spec(
+    spec: dict[str, Any],
+    *,
+    owner_user_id: int | None,
+    enrollment_repo: Any | None,
+    is_admin: bool,
+) -> dict[str, Any]:
+    """Attach enrollment state (allow_exec, base default) + ownership check."""
+    enrollment_id = str(spec.get("enrollment_id") or "").strip()
+    if not enrollment_id:
+        raise OctopError(ErrorCode.NOT_FOUND, "remote_runtime backend requires an enrollment_id")
+    spec["enrollment_id"] = enrollment_id
+    if enrollment_repo is None:
+        # No enrollment store wired (e.g. pure spec plumbing): resolve
+        # execution-disabled rather than guessing capabilities.
+        spec["allow_exec"] = False
+        return spec
+    row = enrollment_repo.get_by_enrollment_id(enrollment_id)
+    if row is None:
+        raise OctopError(ErrorCode.NOT_FOUND, f"runtime enrollment {enrollment_id!r} not found")
+    if not is_admin and row.owner_user_id != owner_user_id:
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            f"runtime enrollment {enrollment_id!r} belongs to another user",
+        )
+    if str(row.status) != "active":
+        raise OctopError(
+            ErrorCode.RUNTIME_UNSUPPORTED,
+            f"runtime enrollment {enrollment_id!r} is {row.status}",
+        )
+    spec["allow_exec"] = bool(row.allow_exec)
+    if not spec.get("workspace_base") and row.default_workspace_base:
+        spec["workspace_base"] = row.default_workspace_base
+    return spec
+
+
+def split_exec_target(spec: Any) -> tuple[Any, Any | None]:
+    """Split a resolved composite spec into (harness spec, exec sub-spec).
+
+    ``exec_target`` is an Octop-reserved composite key; the harness builder
+    would pass it into ``MountedCompositeBackend`` and crash, so callers pass
+    the stripped spec to ``resolve_backend`` and construct
+    ``ExecTargetCompositeBackend`` from the returned exec sub-spec.
+    """
+    if not isinstance(spec, dict) or "exec_target" not in spec:
+        return spec, None
+    stripped = dict(spec)
+    return stripped, stripped.pop("exec_target")
 
 
 def collect_named_storage_backend_refs(spec: Any) -> set[str]:
@@ -208,6 +311,9 @@ def backend_spec_supports_execution(spec: Any) -> bool:
 
     deepagents ``FilesystemMiddleware`` rejects filesystem ``permissions`` when
     the backend implements ``SandboxBackendProtocol`` (e.g. ``local_shell``).
+    ``remote_runtime`` counts only when the enrollment granted ``allow_exec``
+    (resolved onto the spec at adapter time); composites also honor their
+    ``exec_target`` sub-spec.
     """
     if spec is None:
         return True
@@ -218,10 +324,15 @@ def backend_spec_supports_execution(spec: Any) -> bool:
     kind = spec.get("type")
     if kind in {"local_shell", "docker", "opensandbox"}:
         return True
+    if kind == "remote_runtime":
+        return bool(spec.get("allow_exec"))
     if kind == "composite":
         if backend_spec_supports_execution(spec.get("default")):
             return True
         routes = spec.get("routes")
-        if isinstance(routes, dict):
-            return any(backend_spec_supports_execution(route) for route in routes.values())
+        if isinstance(routes, dict) and any(
+            backend_spec_supports_execution(route) for route in routes.values()
+        ):
+            return True
+        return backend_spec_supports_execution(spec.get("exec_target"))
     return False

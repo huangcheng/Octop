@@ -260,14 +260,14 @@ async def test_current_key_dial_supersedes_live_session(env: tuple[Any, OctopSer
         assert registry.online(eid) is True
 
         async with _dial(c, key) as second:
-            # The older session is evicted with 4005 ...
+            # The new dial completes its own fenced handshake first — only a
+            # fully established session supersedes (post-handshake eviction).
+            welcome = await _handshake(second, expected_generation=2)
+            assert welcome["d"]["generation"] == 2
+            # ... then the older session is evicted with 4005.
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 await first.receive_json()
             assert exc_info.value.code == 4005
-
-            # ... and the new dial completes its own fenced handshake.
-            welcome = await _handshake(second, expected_generation=2)
-            assert welcome["d"]["generation"] == 2
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline and len(registry.sessions(eid)) != 1:
                 await asyncio.sleep(0.01)
@@ -309,13 +309,13 @@ async def test_old_key_dial_during_overlap_never_evicts(env: tuple[Any, OctopSer
 
             # A current-key dial outranks both and supersedes them.
             async with _dial(c, key_new) as winner:
+                await _handshake(winner, expected_generation=3)
                 with pytest.raises(WebSocketDisconnect) as first_exc:
                     await current_session.receive_json()
                 assert first_exc.value.code == 4005
                 with pytest.raises(WebSocketDisconnect) as overlap_exc:
                     await overlap_session.receive_json()
                 assert overlap_exc.value.code == 4005
-                await _handshake(winner, expected_generation=3)
                 deadline = time.monotonic() + 5.0
                 while time.monotonic() < deadline and len(registry.sessions(eid)) != 1:
                     await asyncio.sleep(0.01)

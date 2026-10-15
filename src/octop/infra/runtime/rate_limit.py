@@ -40,7 +40,7 @@ class RuntimeRateLimiter:
     def __init__(self, *, clock: Callable[[], float] | None = None) -> None:
         self._clock = clock or time.monotonic
         self._dial_buckets: dict[DialKey, tuple[float, float]] = {}
-        self._failures: dict[DialKey, int] = {}
+        self._failures: dict[DialKey, tuple[int, float]] = {}
         self._blocked_until: dict[DialKey, float] = {}
 
     @staticmethod
@@ -80,12 +80,14 @@ class RuntimeRateLimiter:
     def record_credential_failure(self, ip: str, enrollment_id: str | None = None) -> None:
         """Count a bad credential; the fifth consecutive one blocks the key."""
         key = self._key(ip, enrollment_id)
-        count = self._failures.get(key, 0) + 1
+        count, _ = self._failures.get(key, (0, 0.0))
+        count += 1
+        now = self._clock()
         if count >= self.CREDENTIAL_FAILURE_THRESHOLD:
             self._failures.pop(key, None)
-            self._blocked_until[key] = self._clock() + self.BLOCK_SECONDS
+            self._blocked_until[key] = now + self.BLOCK_SECONDS
         else:
-            self._failures[key] = count
+            self._failures[key] = (count, now)
         self._gc()
 
     @property
@@ -105,4 +107,6 @@ class RuntimeRateLimiter:
         self._dial_buckets = {
             k: v for k, v in self._dial_buckets.items() if now - v[1] < self._BUCKET_IDLE_SECONDS
         }
-        self._failures.clear()
+        self._failures = {
+            k: v for k, v in self._failures.items() if now - v[1] < self._BUCKET_IDLE_SECONDS
+        }

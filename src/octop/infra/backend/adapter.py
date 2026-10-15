@@ -20,6 +20,7 @@ _AGENT_RESOLVABLE_KINDS = frozenset(
         "postgres",
         "docker",
         "opensandbox",
+        "remote_runtime",
     }
 )
 _OPENSANDBOX_PROTOCOLS = frozenset({"http", "https"})
@@ -152,6 +153,20 @@ def row_to_backend_spec(row: BackendRow) -> dict[str, Any] | None:
                 spec[key] = cfg[key]
         return spec
 
+    if kind == "remote_runtime":
+        enrollment_id = cfg.get("enrollment_id") or row.endpoint
+        if not enrollment_id:
+            return None
+        rt_spec: dict[str, Any] = {
+            "type": "remote_runtime",
+            "enrollment_id": str(enrollment_id),
+        }
+        if cfg.get("workspace_base"):
+            rt_spec["workspace_base"] = str(cfg["workspace_base"])
+        if cfg.get("agent_root"):
+            rt_spec["agent_root"] = str(cfg["agent_root"])
+        return rt_spec
+
     return None
 
 
@@ -166,6 +181,10 @@ def storage_spec_previewable(spec: Any) -> bool:
     if str(spec.get("type") or "").lower() == "opensandbox":
         if "previewable" in spec:
             return bool(spec["previewable"])
+        return False
+    if str(spec.get("type") or "").lower() == "remote_runtime":
+        # Files live on the enrolled machine behind a live WS session; the
+        # admin storage browser has no hub-side mount to walk.
         return False
     from octop.infra.backend.docker_spec import docker_spec_previewable
 

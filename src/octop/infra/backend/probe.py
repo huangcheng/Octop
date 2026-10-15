@@ -70,8 +70,22 @@ def row_for_probe(
     )
 
 
-def probe_storage_backend(row: BackendRow) -> dict[str, Any]:
-    """Return ``{ok: bool, message?: str, message_key?: str}`` after a probe."""
+def probe_storage_backend(
+    row: BackendRow,
+    *,
+    runtime_session_provider: Any | None = None,
+    allow_exec: bool | None = None,
+) -> dict[str, Any]:
+    """Return ``{ok: bool, message?: str, message_key?: str}`` after a probe.
+
+    ``remote_runtime`` rows probe through a live session: fs write→read→delete
+    under ``.probe/`` plus one execute leg when the enrollment allows exec
+    (spec §7.2) — pass the enrollment-resolved ``allow_exec`` (the row→spec
+    mapping is pure and cannot see the enrollment table; ``None`` falls back
+    to the row config flag, default off).  The caller supplies
+    ``runtime_session_provider`` (the hub-side live-session lookup) and must
+    run this off the session event loop — the probe drives the sync proxy.
+    """
     kind = (row.kind or "").lower()
 
     if kind == "docker":
@@ -79,6 +93,9 @@ def probe_storage_backend(row: BackendRow) -> dict[str, Any]:
 
     if kind == "opensandbox":
         return _probe_opensandbox(row)
+
+    if kind == "remote_runtime":
+        return _probe_remote_runtime(row, runtime_session_provider, allow_exec)
 
     spec = row_to_backend_spec(row)
     if spec is None:
@@ -88,6 +105,74 @@ def probe_storage_backend(row: BackendRow) -> dict[str, Any]:
         return {"ok": False, "message": "host/endpoint not configured"}
 
     return probe_backend(spec)
+
+
+_REMOTE_PROBE_MARKER = "octop-remote-runtime-probe"
+
+
+def _probe_remote_runtime(
+    row: BackendRow, provider: Any | None, allow_exec: bool | None
+) -> dict[str, Any]:
+    """Live-session probe: fs roundtrip under ``.probe/`` + optional exec leg."""
+    from octop.infra.runtime.backend import RemoteRuntimeBackend  # noqa: PLC0415
+
+    spec = row_to_backend_spec(row)
+    if spec is None:
+        return {"ok": False, "message": "configuration incomplete"}
+    if allow_exec is None:
+        cfg = {}
+        try:
+            parsed = json.loads(row.config_json) if row.config_json else {}
+            cfg = parsed if isinstance(parsed, dict) else {}
+        except Exception:  # noqa: BLE001 - malformed config: default off
+            cfg = {}
+        allow_exec = bool(cfg.get("allow_exec"))
+    if provider is None:
+        return {
+            "ok": False,
+            "message": "remote runtime probe requires a live-session provider",
+        }
+    link = provider()
+    if link is None or not link.session.is_live:
+        return {
+            "ok": False,
+            "message": (
+                f"runtime machine {spec.get('enrollment_id', '')!r} is offline (no live session)"
+            ),
+        }
+    backend = RemoteRuntimeBackend(
+        str(spec["enrollment_id"]),
+        session_provider=lambda: link,
+        allow_exec=bool(allow_exec),
+        workspace_base=str(spec.get("workspace_base") or ""),
+        agent_root=str(spec.get("agent_root") or "auto"),
+    )
+    probe_path = f".probe/octop-probe-{uuid.uuid4().hex}.txt"
+    try:
+        write_result = backend.write(probe_path, _REMOTE_PROBE_MARKER)
+        if write_result.error:
+            return {"ok": False, "message": f"probe write failed: {write_result.error}"}
+        read_result = backend.read(probe_path)
+        content = read_result.file_data.get("content", "") if read_result.file_data else ""
+        if read_result.error:
+            return {"ok": False, "message": f"probe read failed: {read_result.error}"}
+        if content != _REMOTE_PROBE_MARKER:
+            return {"ok": False, "message": "probe readback mismatch"}
+        if backend.delete(probe_path).error:
+            logger.warning("remote runtime probe cleanup failed for %s", probe_path)
+    except Exception as exc:  # noqa: BLE001 - probe reports, never raises
+        return {"ok": False, "message": f"probe failed: {exc}"}
+    if backend.allow_exec:
+        response = backend.execute(f"echo {_REMOTE_PROBE_MARKER}", timeout=30)
+        if response.exit_code != 0 or _REMOTE_PROBE_MARKER not in response.output:
+            return {
+                "ok": False,
+                "message": (
+                    "execute leg failed: "
+                    f"exit={response.exit_code} output={response.output[:200]!r}"
+                ),
+            }
+    return {"ok": True, "message_key": "probe_roundtrip_ok"}
 
 
 def _docker_probe_spec(row: BackendRow) -> dict[str, Any] | None:

@@ -32,6 +32,7 @@ from octop.infra.runtime.protocol import (
     ErrorKind,
     FrameType,
     ProtocolFormatError,
+    RtPong,
     RtWelcome,
     decode_frame,
     encode_frame,
@@ -54,6 +55,9 @@ WS_SUBPROTOCOL = "octop.runtime.v1"
 PROTOCOL_MINOR_VERSION = 0
 HELLO_TIMEOUT_SECONDS = 10.0
 READY_TIMEOUT_SECONDS = 10.0
+# Application-level keepalive: the runtime sends rt.ping every 20s; a silent
+# peer for three intervals is treated as dead (Starlette hides WS pings).
+SESSION_IDLE_TIMEOUT_SECONDS = 65.0
 
 # Wire close codes (spec §6): 4001 auth, 4002 revoked, 4003 rotated,
 # 4004 protocol, 4005 superseded, 4006 version, 4007 exec_disabled.
@@ -134,7 +138,13 @@ async def _session_loop(websocket: WebSocket, session: RuntimeSession) -> None:
             done, pending = await asyncio.wait(
                 {recv_task, closed_task},
                 return_when=asyncio.FIRST_COMPLETED,
+                timeout=SESSION_IDLE_TIMEOUT_SECONDS,
             )
+            if not done:
+                # Silent peer: Starlette never surfaces WS-layer pings, so an
+                # application-level keepalive gap is the only liveness signal.
+                await session.close_with(CLOSE_PROTOCOL_ERROR, "keepalive timeout")
+                return
             for task in pending:
                 task.cancel()
             if recv_task not in done:
@@ -168,6 +178,19 @@ async def _session_loop(websocket: WebSocket, session: RuntimeSession) -> None:
 
         if is_stale(frame.generation, session.generation):
             continue
+        if frame.frame_type == FrameType.RT_PING:
+            with contextlib.suppress(Exception):
+                await websocket.send_text(
+                    encode_frame(
+                        session.generation,
+                        PROTOCOL_MINOR_VERSION,
+                        FrameType.RT_PONG,
+                        RtPong(),
+                    )
+                )
+            continue
+        if frame.frame_type == FrameType.RT_PONG:
+            continue  # liveness is implicit in having received any frame
         if frame.frame_type == FrameType.RT_BYE:
             await session.close_with(1000, "bye")
             return
@@ -284,12 +307,6 @@ async def runtime_ws(websocket: WebSocket) -> None:
         and now < row.rotation_expires_at
     )
 
-    # A current-key dial supersedes every live session of the enrollment
-    # (4005). Previous-key dials never evict — both coexist during overlap.
-    if key_slot == "current":
-        for old in registry.sessions(row.enrollment_id):
-            await old.close_with(CLOSE_SUPERSEDED, "superseded")
-
     async def close_impl(code: int, reason: str) -> None:
         if websocket.application_state == WebSocketState.CONNECTED:
             with contextlib.suppress(Exception):
@@ -354,6 +371,15 @@ async def runtime_ws(websocket: WebSocket) -> None:
         client_ip=client_ip,
         close_impl=close_impl,
     )
+    # Supersession happens AFTER the handshake so eviction observes the final
+    # registry state: a current-key dial supersedes every live session of the
+    # enrollment (4005). Previous-key dials never evict — both coexist during
+    # the rotation overlap.
+    if key_slot == "current":
+        for old in registry.sessions(row.enrollment_id):
+            with contextlib.suppress(Exception):
+                await old.close_with(CLOSE_SUPERSEDED, "superseded")
+
     registry.register(session)
     limiter.refund_dial(client_ip, enrollment_id)  # successful handshakes are exempt
     with contextlib.suppress(Exception):

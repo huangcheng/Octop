@@ -126,9 +126,15 @@ def test_failure_counter_resets_after_block() -> None:
 
 
 def test_memory_stays_bounded_under_many_keys() -> None:
-    limiter = RuntimeRateLimiter()
+    # Fresh failure counters are kept (security fix: GC must not clear them),
+    # so the clock advances past the idle window between keys to age old
+    # entries out — memory stays bounded without wiping live counters.
+    clock = _Clock()
+    limiter = RuntimeRateLimiter(clock=clock)
+    step = RuntimeRateLimiter._BUCKET_IDLE_SECONDS / 100 + 1.0
     for i in range(2000):
         limiter.record_credential_failure(f"10.0.{i // 256}.{i % 256}", f"e{i}")
+        clock.advance(step)
     assert limiter.tracked_keys <= RuntimeRateLimiter._GC_THRESHOLD
 
 

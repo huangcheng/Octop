@@ -93,8 +93,30 @@ def render_launchd_plist(octop_bin: str, runtime_home: Path) -> str:
     return plistlib.dumps(doc).decode("utf-8")
 
 
+def _systemd_env_value(value: str) -> str:
+    """Escape a value for ``Environment=`` per systemd.syntax(7).
+
+    ``%`` starts a specifier, so it is doubled; backslashes and double quotes
+    are escaped; values with whitespace or quotes are wrapped in quotes.
+    """
+    escaped = value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"')
+    if any(ch.isspace() for ch in escaped) or '"' in escaped:
+        return f'"{escaped}"'
+    return escaped
+
+
+def _systemd_exec_path(path: str) -> str:
+    """Quote an ExecStart binary path when it contains whitespace."""
+    quoted = path.replace("%", "%%")
+    if any(ch.isspace() for ch in quoted):
+        return f'"{quoted}"'
+    return quoted
+
+
 def render_systemd_user_unit(octop_bin: str, runtime_home: Path) -> str:
     """systemd --user unit: restart on failure, user-session default target."""
+    home = _systemd_env_value(str(runtime_home))
+    binary = _systemd_exec_path(octop_bin)
     return (
         "[Unit]\n"
         "Description=Octop Remote Runtime daemon\n"
@@ -102,9 +124,9 @@ def render_systemd_user_unit(octop_bin: str, runtime_home: Path) -> str:
         "\n"
         "[Service]\n"
         "Type=simple\n"
-        f"Environment=OCTOP_RUNTIME_HOME={runtime_home}\n"
+        f"Environment=OCTOP_RUNTIME_HOME={home}\n"
         "Environment=OCTOP_SERVICE_MODE=systemd\n"
-        f"ExecStart={octop_bin} runtime run\n"
+        f"ExecStart={binary} runtime run\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
         "TimeoutStopSec=30\n"
@@ -165,8 +187,10 @@ class RuntimeService:
         path = self.path
         if path.is_file():
             try:
-                if path.read_text(encoding="utf-8") == content:
-                    return False  # already installed, identical content
+                # Identical content AND loaded = nothing to do. A unit left
+                # behind by a failed load must be re-loaded, not skipped.
+                if path.read_text(encoding="utf-8") == content and self._loaded(mode):
+                    return False
             except UnicodeDecodeError:
                 pass  # fall through and rewrite
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +221,23 @@ class RuntimeService:
         if mode == "systemd":
             _run(self._runner, ["systemctl", "--user", "daemon-reload"])
         return True
+
+    def _loaded(self, mode: str) -> bool:
+        if mode == "launchd":
+            proc = self._runner(
+                ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return proc.returncode == 0
+        proc = self._runner(
+            ["systemctl", "--user", "is-enabled", SYSTEMD_UNIT_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return proc.returncode == 0
 
     def start(self) -> None:
         if self.mode == "launchd":

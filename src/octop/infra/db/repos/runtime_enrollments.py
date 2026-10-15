@@ -99,8 +99,10 @@ class RuntimeEnrollmentRepo:
     ) -> RuntimeEnrollmentRow:
         ts = now_ts()
         try:
-            # Single-statement conditional insert keeps the active-row cap atomic
-            # on both dialects (SQLite single-writer; PG statement-level snapshot).
+            # SQLite: single-writer lock makes the conditional insert atomic.
+            # PostgreSQL: READ COMMITTED snapshots would let two concurrent
+            # inserts both see count < cap, so the owner row is locked first
+            # (FOR UPDATE) to serialize per-user cap checks.
             if active_cap is None:
                 with self._db.transaction() as conn:
                     conn.execute(
@@ -122,6 +124,11 @@ class RuntimeEnrollmentRepo:
                     )
             else:
                 with self._db.transaction() as conn:
+                    if self._db.dialect == "postgresql":
+                        conn.execute(
+                            "SELECT id FROM users WHERE id = ? FOR UPDATE",
+                            (owner_user_id,),
+                        )
                     cur = conn.execute(
                         "INSERT INTO runtime_enrollments("
                         "enrollment_id, user_id, display_name, key_hash, allow_exec, "

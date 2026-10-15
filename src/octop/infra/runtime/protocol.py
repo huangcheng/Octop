@@ -63,6 +63,8 @@ class FrameType(StrEnum):
     RT_CREDIT = "rt.credit"
     RT_ROTATE = "rt.rotate"
     RT_BYE = "rt.bye"
+    RT_PING = "rt.ping"
+    RT_PONG = "rt.pong"
     FS_LS = "fs.ls"
     FS_STAT = "fs.stat"
     FS_MKDIR = "fs.mkdir"
@@ -155,6 +157,20 @@ class RtBye:
 
 
 @dataclasses.dataclass(frozen=True)
+class RtPing:
+    """Application-level keepalive request (Starlette hides WS-layer pings)."""
+
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
+class RtPong:
+    """Application-level keepalive reply."""
+
+    pass
+
+
+@dataclasses.dataclass(frozen=True)
 class FsPath:
     path: str
 
@@ -207,6 +223,9 @@ class FsRename:
 @dataclasses.dataclass(frozen=True)
 class FsPattern:
     pattern: str
+    #: Optional walk base for glob/grep (absolute, contained in roots);
+    #: empty walks every advertised root. Hub-side scoping aid.
+    path: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -273,6 +292,8 @@ PAYLOAD_TYPES: dict[FrameType, type] = {
     FrameType.RT_CREDIT: RtCredit,
     FrameType.RT_ROTATE: RtRotate,
     FrameType.RT_BYE: RtBye,
+    FrameType.RT_PING: RtPing,
+    FrameType.RT_PONG: RtPong,
     FrameType.FS_LS: FsPath,
     FrameType.FS_STAT: FsPath,
     FrameType.FS_MKDIR: FsMkdir,

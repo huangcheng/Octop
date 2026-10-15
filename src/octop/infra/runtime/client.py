@@ -48,6 +48,7 @@ from octop.infra.runtime.enrollment_store import (
     EnrollmentStore,
     RuntimeEnrollment,
 )
+from octop.infra.runtime.executor import FsExecutor
 from octop.infra.runtime.protocol import (
     FRAME_CAP_BYTES,
     INITIAL_CREDIT_BYTES,
@@ -55,11 +56,14 @@ from octop.infra.runtime.protocol import (
     FrameType,
     ProtocolFormatError,
     RtHello,
+    RtPing,
+    RtPong,
     RtReady,
     RtWelcome,
     decode_frame,
     encode_frame,
 )
+from octop.infra.utils.json_file import JsonFileCorruptError
 
 try:
     CLIENT_VERSION = _dist_version("octop")
@@ -207,6 +211,7 @@ class RuntimeClient:
         welcome_timeout: float = WELCOME_TIMEOUT_SECONDS,
         clock: Clock | None = None,
         rand: Callable[[], float] | None = None,
+        fs_executor: FsExecutor | None = None,
     ) -> None:
         self._store = store
         self._handlers = dict(handlers or {})
@@ -222,10 +227,38 @@ class RuntimeClient:
         self._conn: Any = None
         self._generation = 0
         self._tasks: set[asyncio.Task[None]] = set()
+        self._fs_executor: FsExecutor | None = None
+        if fs_executor is not None:
+            self.set_fs_executor(fs_executor)
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    def set_fs_executor(self, executor: FsExecutor) -> None:
+        """Route ``fs.*`` frames (and ``rt.credit`` for fs streams) to *executor*.
+        Replies, errors, and credit grants ride :meth:`_send_frame`. Additive:
+        clients without an executor behave exactly as before.
+        """
+        self._fs_executor = executor
+        executor.bind(self._send_frame)
+        self._handlers.update(
+            {
+                FrameType.FS_LS: executor.handle_fs_ls,
+                FrameType.FS_STAT: executor.handle_fs_stat,
+                FrameType.FS_MKDIR: executor.handle_fs_mkdir,
+                FrameType.FS_READ: executor.handle_fs_read,
+                FrameType.FS_WRITE: executor.handle_fs_write,
+                FrameType.FS_EDIT: executor.handle_fs_edit,
+                FrameType.FS_DELETE: executor.handle_fs_delete,
+                FrameType.FS_RENAME: executor.handle_fs_rename,
+                FrameType.FS_GLOB: executor.handle_fs_glob,
+                FrameType.FS_GREP: executor.handle_fs_grep,
+                FrameType.FS_CANCEL: executor.handle_fs_cancel,
+                FrameType.RT_CREDIT: executor.handle_rt_credit,
+            }
+        )
+        executor.start_sweeper()
 
     async def stop(self) -> None:
         """Graceful shutdown: send ``rt.bye`` when connected, then close."""
@@ -242,6 +275,8 @@ class RuntimeClient:
                 logger.debug("ws close failed", exc_info=True)
         for task in self._tasks:
             task.cancel()
+        if self._fs_executor is not None:
+            await self._fs_executor.close()
 
     async def run(self) -> None:
         """Dial/serve until a terminal close code, a hold, or :meth:`stop`."""
@@ -366,6 +401,7 @@ class RuntimeClient:
             outcome = await self._handshake(conn, enrollment)
             if outcome is not None:
                 return outcome
+            self._spawn(self._keepalive_loop(conn))
             return await self._dispatch_loop(conn)
         except ConnectionClosed as exc:
             if self._stopped:
@@ -473,6 +509,12 @@ class RuntimeClient:
             if frame.frame_type in _SELF_CONSUMED:
                 logger.debug("ignoring duplicate %s", frame.frame_type.value)
                 continue
+            if frame.frame_type == FrameType.RT_PING:
+                with contextlib.suppress(Exception):
+                    await self._send_frame(FrameType.RT_PONG, RtPong())
+                continue
+            if frame.frame_type == FrameType.RT_PONG:
+                continue
             if frame.frame_type == FrameType.RT_BYE:
                 logger.info("hub sent rt.bye; reconnecting")
                 return _SessionOutcome("network")
@@ -494,6 +536,31 @@ class RuntimeClient:
         except Exception:
             # Per-op failures are never session death (spec §5/§10).
             logger.exception("handler for %s failed", frame.frame_type.value)
+
+    async def _send_frame(
+        self, frame_type: FrameType, payload: Any = None, request_id: str | None = None
+    ) -> None:
+        """Send one frame on the live session (executor replies and credits)."""
+        conn = self._conn
+        if conn is None:
+            raise ConnectionError("runtime client is not connected")
+        await conn.send(
+            encode_frame(self._generation, MINOR_VERSION, frame_type, payload, request_id)
+        )
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _keepalive_loop(self, conn: Any) -> None:
+        """Application-level keepalive: Starlette hides WS-layer pings from the
+        hub, so the hub's idle timeout needs rt.ping frames from the daemon."""
+        while True:
+            await asyncio.sleep(PING_INTERVAL_SECONDS)
+            await conn.send(
+                encode_frame(self._generation, MINOR_VERSION, FrameType.RT_PING, RtPing())
+            )
 
     def _build_hello(self, enrollment: RuntimeEnrollment) -> RtHello:
         roots = enrollment.roots or (str(Path.home()),)
@@ -580,7 +647,7 @@ class RuntimeClient:
 
         try:
             self._store.update(mutate)
-        except OSError:
+        except (OSError, JsonFileCorruptError):
             logger.error("failed to persist enrollment state; holding", exc_info=True)
             return False
         return True
@@ -590,7 +657,7 @@ class RuntimeClient:
     ) -> RuntimeEnrollment | None:
         try:
             return self._store.update(lambda e: setattr(e, "last_close_code", code))
-        except OSError:
+        except (OSError, JsonFileCorruptError):
             logger.error("failed to persist last_close_code; holding", exc_info=True)
             return None
 
