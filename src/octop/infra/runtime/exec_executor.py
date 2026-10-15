@@ -501,13 +501,15 @@ class ExecExecutor:
             kwargs["start_new_session"] = True  # own process group for killpg
         master: int | None = None
         slave: int | None = None
-        if run.pty:
-            master, slave = posix_compat.openpty()
-            posix_compat.set_nonblock(master)
-            if run.winsize is not None:
-                cols, rows = run.winsize
-                posix_compat.set_winsize(master, int(cols), int(rows))
+        # PTY setup lives inside the try so a failing fcntl/ioctl cannot leak
+        # both descriptors — the handler closes master/slave on any error.
         try:
+            if run.pty:
+                master, slave = posix_compat.openpty()
+                posix_compat.set_nonblock(master)
+                if run.winsize is not None:
+                    cols, rows = run.winsize
+                    posix_compat.set_winsize(master, int(cols), int(rows))
             if master is not None and slave is not None:
                 kwargs.update({"stdin": slave, "stdout": slave, "stderr": slave})
             run.proc = await asyncio.create_subprocess_exec(*run.cmd, **kwargs)
@@ -602,10 +604,16 @@ class ExecExecutor:
                 # this only yields until queue space frees up.
                 await asyncio.sleep(0.01)
         if run.sender_task is not None:
-            with contextlib.suppress(asyncio.TimeoutError):
+            try:
                 await asyncio.wait_for(
                     asyncio.shield(run.sender_task), timeout=self._credit_wait + 30.0
                 )
+            except TimeoutError:
+                pass
+            except Exception:
+                # A dead sender must never skip cleanup below (orphaned child,
+                # leaked PTY, stuck registry entries).
+                logger.debug("sender task failed for %s", run.exec_id, exc_info=True)
             run.sender_task.cancel()
             await asyncio.gather(run.sender_task, return_exceptions=True)
         try:
@@ -805,9 +813,10 @@ class ExecExecutor:
                 return
             proc.stdin.write(data)
             await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
+        except OSError as exc:
             run.stdin_closed = True
-            logger.debug("stdin write failed (process gone) for %s", run.exec_id)
+            # EIO on a PTY master is the EPIPE equivalent (slave side gone).
+            logger.debug("stdin write failed (process gone) for %s: %s", run.exec_id, exc)
 
     async def _close_stdin(self, run: _ExecRun) -> None:
         try:

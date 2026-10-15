@@ -4,7 +4,7 @@
  * Keys are shown exactly once; rotation is single-slot (409 while pending).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Badge,
@@ -82,9 +82,14 @@ export default function RuntimeMachinesPanel() {
   const allowExecValue = Form.useWatch("allow_exec", issueForm);
   const consentValue = Form.useWatch("exec_consent", issueForm);
 
+  const reloadingRef = useRef(false);
   const reload = useCallback(
     async (opts?: { silent?: boolean }) => {
       const silent = Boolean(opts?.silent);
+      // Concurrency guard: overlapping waves race their setRows/setOnlineById
+      // and the slower wave resurrects stale online flags.
+      if (reloadingRef.current) return;
+      reloadingRef.current = true;
       if (!silent) setLoading(true);
       try {
         const list = await runtimesApi.list();
@@ -109,6 +114,7 @@ export default function RuntimeMachinesPanel() {
           message.error(apiErrorMessage(err, t(`${PREFIX}.loadFailed`), t));
         }
       } finally {
+        reloadingRef.current = false;
         if (!silent) setLoading(false);
       }
     },
@@ -198,7 +204,7 @@ export default function RuntimeMachinesPanel() {
     !String(nameValue ?? "").trim() ||
     (Boolean(allowExecValue) && !consentValue);
 
-  const columns: ColumnsType<RuntimeEnrollment> = [
+  const tableColumns: ColumnsType<RuntimeEnrollment> = [
     {
       title: t(`${PREFIX}.colName`),
       key: "display_name",
@@ -342,6 +348,12 @@ export default function RuntimeMachinesPanel() {
       },
     },
   ];
+  // Memoized: the 15s poll replaces onlineById and would otherwise re-diff
+  // the column definitions every cycle (BridgeSettings memoizes likewise).
+  const columns: ColumnsType<RuntimeEnrollment> = useMemo(
+    () => tableColumns,
+    [onlineById, busyId, t, timeZone],
+  );
 
   return (
     <>
