@@ -22,6 +22,19 @@ def ws_token(auth: dict[str, str]) -> str:
     return auth["Authorization"].split(" ", 1)[1]
 
 
+class HandshakeDenied(Exception):
+    """The app answered the websocket handshake with a plain HTTP response.
+
+    Starlette turns an ``HTTPException`` raised in a websocket endpoint into
+    a handshake denial (status + body) instead of a 101 switch.
+    """
+
+    def __init__(self, status_code: int, body: bytes = b"") -> None:
+        super().__init__(f"websocket handshake denied: HTTP {status_code}")
+        self.status_code = status_code
+        self.body = body
+
+
 class ASGIWebSocketSession:
     """Drive an ASGI websocket endpoint on the caller's event loop.
 
@@ -33,9 +46,18 @@ class ASGIWebSocketSession:
     uvicorn in production.
     """
 
-    def __init__(self, app: Any, path: str) -> None:
+    def __init__(
+        self,
+        app: Any,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        subprotocols: list[str] | None = None,
+    ) -> None:
         self._app = app
         self._path = path
+        self._headers = headers or {}
+        self._subprotocols = list(subprotocols or [])
         self._from_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._to_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
@@ -51,10 +73,11 @@ class ASGIWebSocketSession:
             "raw_path": url.path.encode("ascii"),
             "query_string": url.query.encode("ascii"),
             "root_path": "",
-            "headers": [(b"host", b"testserver")],
+            "headers": [(b"host", b"testserver")]
+            + [(k.lower().encode("ascii"), v.encode("ascii")) for k, v in self._headers.items()],
             "client": ("testclient", 50000),
             "server": ("testserver", 80),
-            "subprotocols": [],
+            "subprotocols": list(self._subprotocols),
             "state": {},
             "app": self._app,
         }
@@ -87,6 +110,17 @@ class ASGIWebSocketSession:
         event = await self._next_event(timeout)
         if event["type"] == "websocket.close":
             raise WebSocketDisconnect(event.get("code", 1000), event.get("reason"))
+        if event["type"] == "websocket.http.response.start":
+            status = event.get("status", 500)
+            body = b""
+            while True:
+                part = await self._next_event(timeout)
+                if part["type"] != "websocket.http.response.body":
+                    raise AssertionError(f"unexpected denial event: {part['type']}")
+                body += bytes(part.get("body") or b"")
+                if not part.get("more_body"):
+                    break
+            raise HandshakeDenied(status, body)
         if event["type"] != "websocket.accept":
             raise AssertionError(f"unexpected handshake event: {event['type']}")
 
@@ -94,6 +128,9 @@ class ASGIWebSocketSession:
         await self._to_app.put(
             {"type": "websocket.receive", "text": json.dumps(payload, ensure_ascii=False)},
         )
+
+    async def send_text(self, payload: str) -> None:
+        await self._to_app.put({"type": "websocket.receive", "text": payload})
 
     async def send_bytes(self, payload: bytes) -> None:
         await self._to_app.put({"type": "websocket.receive", "bytes": payload})
@@ -132,9 +169,15 @@ class ASGIWebSocketSession:
 
 
 @asynccontextmanager
-async def ws_connect(app: Any, path: str) -> AsyncIterator[ASGIWebSocketSession]:
+async def ws_connect(
+    app: Any,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    subprotocols: list[str] | None = None,
+) -> AsyncIterator[ASGIWebSocketSession]:
     """Open an in-process websocket session against *app* on the current loop."""
-    session = ASGIWebSocketSession(app, path)
+    session = ASGIWebSocketSession(app, path, headers=headers, subprotocols=subprotocols)
     try:
         await session.connect()
         yield session

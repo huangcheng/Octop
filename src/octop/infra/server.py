@@ -27,6 +27,8 @@ from octop.infra.gateway.gateway import Gateway
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
 from octop.infra.proactive.service import ProactiveCareService
+from octop.infra.runtime.rate_limit import RuntimeRateLimiter
+from octop.infra.runtime.registry import RuntimeSessionRegistry
 from octop.infra.setup import password_file as _wizard_pw
 from octop.infra.setup.password_file import WIZARD_FILE_NAME
 from octop.infra.setup.wizard_tokens import WizardTokenStore
@@ -221,6 +223,8 @@ class AppRuntime:
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
     bridge_manager: Any | None = None
+    runtime_registry: RuntimeSessionRegistry | None = None
+    runtime_rate_limiter: RuntimeRateLimiter | None = None
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
@@ -261,6 +265,9 @@ class OctopServer:
         self._ldap_service: LdapAuthService | None = None
         self._ldap_bind_throttle: LdapBindThrottle | None = None
         self._ldap_bind_throttle_services: SharedServices | None = None
+        # Remote runtime session state is per-process; the launcher records
+        # the uvicorn worker count so the WS endpoint can 404 multi-worker hubs.
+        self.uvicorn_workers = 1
 
     # Backward compat: expose user_manager directly
     @property
@@ -565,6 +572,8 @@ class OctopServer:
             trajectory_service=trajectory_service,
             history_archive=history_archive,
             bridge_manager=bridge_mgr,
+            runtime_registry=RuntimeSessionRegistry(),
+            runtime_rate_limiter=RuntimeRateLimiter(),
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 

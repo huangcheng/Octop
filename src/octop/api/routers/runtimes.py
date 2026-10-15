@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field
 
 from octop.api.deps import current_user, get_server
 from octop.infra.db.repos.runtime_enrollments import (
+    EnrollmentConflictError,
+    EnrollmentQuotaError,
     RuntimeEnrollmentRepo,
     RuntimeEnrollmentRow,
 )
@@ -91,29 +93,34 @@ async def issue_runtime(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     repo = _repo(server)
-    if repo.count_active_for_user(user.id) >= MAX_ACTIVE_ENROLLMENTS:
+    name = body.display_name.strip()
+    if not name:
+        raise OctopError(ErrorCode.AGENT_ID_INVALID, "display name required")
+
+    enrollment_id = new_ulid()
+    key, key_hash = _new_key()
+    try:
+        row = repo.create(
+            enrollment_id=enrollment_id,
+            owner_user_id=user.id,
+            display_name=name,
+            key_hash=key_hash,
+            allow_exec=body.allow_exec,
+            default_workspace_base=body.default_workspace_base,
+            active_cap=MAX_ACTIVE_ENROLLMENTS,
+        )
+    except EnrollmentQuotaError as exc:
         raise OctopError(
             ErrorCode.AGENT_QUOTA_EXCEEDED,
             "active runtime enrollment limit reached",
             details={"limit": MAX_ACTIVE_ENROLLMENTS},
             status=409,
-        )
-    name = body.display_name.strip()
-    if not name:
-        raise OctopError(ErrorCode.AGENT_ID_INVALID, "display name required")
-    if any(r.display_name == name for r in repo.list_for_user(user.id)):
-        raise OctopError(ErrorCode.BRIDGE_DISPLAY_NAME_TAKEN, "display name taken")
+        ) from exc
+    except EnrollmentConflictError as exc:
+        raise OctopError(
+            ErrorCode.BRIDGE_DISPLAY_NAME_TAKEN, "display name taken", status=409
+        ) from exc
 
-    enrollment_id = new_ulid()
-    key, key_hash = _new_key()
-    row = repo.create(
-        enrollment_id=enrollment_id,
-        owner_user_id=user.id,
-        display_name=name,
-        key_hash=key_hash,
-        allow_exec=body.allow_exec,
-        default_workspace_base=body.default_workspace_base,
-    )
     base = str(request.base_url).rstrip("/")
     enroll_command = (
         f"octop runtime enroll --server {base} --key-file <path-to-key-file> "
@@ -175,4 +182,7 @@ async def runtime_status(
 ) -> dict[str, Any]:
     repo = _repo(server)
     row = _owned(repo, enrollment_id, user)
-    return _public(row)
+    result = _public(row)
+    registry = getattr(getattr(server, "app_runtime", None), "runtime_registry", None)
+    result["online"] = bool(registry is not None and registry.online(enrollment_id))
+    return result

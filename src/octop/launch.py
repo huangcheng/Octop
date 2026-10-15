@@ -98,6 +98,8 @@ async def run_foreground(
         )
         reload = False
 
+    # The runtime WS endpoint is per-process state; multi-worker hubs deny it.
+    srv.uvicorn_workers = worker_count
     app = build_app(srv)
     servers: list[uvicorn.Server] = []
 

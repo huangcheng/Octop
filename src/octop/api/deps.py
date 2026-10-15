@@ -37,6 +37,8 @@ _JWT_EXEMPT_PREFIXES = (
     "/api/internal/mcp/",
     # Short-lived download links: the unguessable token is the credential.
     "/api/downloads/link/",
+    # Runtime daemon dial-in authenticates by rk_ Bearer, not JWT.
+    "/api/runtime/",
 )
 _JWT_EXEMPT_EXACT = (
     "/api/health",
