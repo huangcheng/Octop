@@ -172,32 +172,38 @@ export default function RuntimeMachinesPanel() {
     }
   };
 
-  const onRotate = async (row: RuntimeEnrollment) => {
-    setBusyId(row.enrollment_id);
-    try {
-      const result = await runtimesApi.rotate(row.enrollment_id);
-      setKeyReveal({ key: result.key_shown_once, name: row.display_name });
-    } catch (err) {
-      // 409 RUNTIME_ROTATION_PENDING and friends map to apiErrors.* copy.
-      message.error(apiErrorMessage(err, t(`${PREFIX}.rotateFailed`), t));
-    } finally {
-      setBusyId(null);
-      void reload({ silent: true });
-    }
-  };
+  const onRotate = useCallback(
+    async (row: RuntimeEnrollment) => {
+      setBusyId(row.enrollment_id);
+      try {
+        const result = await runtimesApi.rotate(row.enrollment_id);
+        setKeyReveal({ key: result.key_shown_once, name: row.display_name });
+      } catch (err) {
+        // 409 RUNTIME_ROTATION_PENDING and friends map to apiErrors.* copy.
+        message.error(apiErrorMessage(err, t(`${PREFIX}.rotateFailed`), t));
+      } finally {
+        setBusyId(null);
+        void reload({ silent: true });
+      }
+    },
+    [t, reload],
+  );
 
-  const onRevoke = async (row: RuntimeEnrollment) => {
-    setBusyId(row.enrollment_id);
-    try {
-      await runtimesApi.revoke(row.enrollment_id);
-      message.success(t(`${PREFIX}.revoked`));
-    } catch (err) {
-      message.error(apiErrorMessage(err, t(`${PREFIX}.revokeFailed`), t));
-    } finally {
-      setBusyId(null);
-      void reload({ silent: true });
-    }
-  };
+  const onRevoke = useCallback(
+    async (row: RuntimeEnrollment) => {
+      setBusyId(row.enrollment_id);
+      try {
+        await runtimesApi.revoke(row.enrollment_id);
+        message.success(t(`${PREFIX}.revoked`));
+      } catch (err) {
+        message.error(apiErrorMessage(err, t(`${PREFIX}.revokeFailed`), t));
+      } finally {
+        setBusyId(null);
+        void reload({ silent: true });
+      }
+    },
+    [t, reload],
+  );
 
   // Consent gate: exec requires the explicit acknowledgement checkbox.
   const issueBlocked =
@@ -352,7 +358,7 @@ export default function RuntimeMachinesPanel() {
   // the column definitions every cycle (BridgeSettings memoizes likewise).
   const columns: ColumnsType<RuntimeEnrollment> = useMemo(
     () => tableColumns,
-    [onlineById, busyId, t, timeZone],
+    [onlineById, busyId, t, timeZone, onRotate, onRevoke],
   );
 
   return (

@@ -71,6 +71,7 @@ import fnmatch
 import json
 import logging
 import posixpath
+import threading
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -246,6 +247,9 @@ class RuntimeBackendHub:
         self._registry = registry
         self._repo = enrollment_repo
         self._backends: dict[tuple[str, str], RemoteRuntimeBackend] = {}
+        # workspace_for_agent is sync and runs in worker threads (API routes,
+        # TeamService callbacks) — same cross-thread pattern as the registry.
+        self._lock = threading.RLock()
 
     def link_for(self, enrollment_id: str) -> SessionLink | None:
         """Live link for *enrollment_id*; the newest generation wins."""
@@ -270,33 +274,34 @@ class RuntimeBackendHub:
         eid = str(enrollment_id)
         content_root = resolve_content_root(workspace_base, agent_root, agent_id)
         key = (eid, content_root)
-        cached = self._backends.get(key)
-        if cached is not None:
-            return cached
-        if self._repo is not None:
-            # Cache-miss only: closes the revoked-while-uncached window cheap.
-            # Later revocations are caught at spec-finalize time upstream.
-            row = self._repo.get_by_enrollment_id(eid)
-            if row is None:
-                raise OctopError(ErrorCode.NOT_FOUND, f"runtime enrollment {eid!r} not found")
-            if str(row.status) != "active":
-                raise OctopError(
-                    ErrorCode.RUNTIME_UNSUPPORTED,
-                    f"runtime enrollment {eid!r} is {row.status}",
-                )
-        backend = RemoteRuntimeBackend(
-            eid,
-            session_provider=partial(self.link_for, eid),
-            allow_exec=allow_exec,
-            workspace_base=workspace_base,
-            agent_root=agent_root,
-            agent_id=agent_id,
-        )
-        if len(self._backends) >= self.MAX_CACHED_BACKENDS:
-            oldest = next(iter(self._backends))
-            del self._backends[oldest]
-        self._backends[key] = backend
-        return backend
+        with self._lock:
+            cached = self._backends.get(key)
+            if cached is not None:
+                return cached
+            if self._repo is not None:
+                # Cache-miss only: closes the revoked-while-uncached window
+                # cheap. Later revocations are caught at spec-finalize time.
+                row = self._repo.get_by_enrollment_id(eid)
+                if row is None:
+                    raise OctopError(ErrorCode.NOT_FOUND, f"runtime enrollment {eid!r} not found")
+                if str(row.status) != "active":
+                    raise OctopError(
+                        ErrorCode.RUNTIME_UNSUPPORTED,
+                        f"runtime enrollment {eid!r} is {row.status}",
+                    )
+            backend = RemoteRuntimeBackend(
+                eid,
+                session_provider=partial(self.link_for, eid),
+                allow_exec=allow_exec,
+                workspace_base=workspace_base,
+                agent_root=agent_root,
+                agent_id=agent_id,
+            )
+            if len(self._backends) >= self.MAX_CACHED_BACKENDS:
+                oldest = next(iter(self._backends))
+                del self._backends[oldest]
+            self._backends[key] = backend
+            return backend
 
 
 class _IncomingCredit:
