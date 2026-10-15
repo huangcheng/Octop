@@ -24,7 +24,9 @@ posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX-only service s
 def fake_runner(calls: list[list[str]]):
     def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         calls.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        # systemctl show -p LoadState --value prints the load state.
+        stdout = "loaded\n" if "LoadState" in argv else ""
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
     return run
 

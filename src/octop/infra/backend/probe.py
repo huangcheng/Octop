@@ -153,9 +153,9 @@ def _probe_remote_runtime(
         if write_result.error:
             return {"ok": False, "message": f"probe write failed: {write_result.error}"}
         read_result = backend.read(probe_path)
-        content = read_result.file_data.get("content", "") if read_result.file_data else ""
         if read_result.error:
             return {"ok": False, "message": f"probe read failed: {read_result.error}"}
+        content = read_result.file_data.get("content", "") if read_result.file_data else ""
         if content != _REMOTE_PROBE_MARKER:
             return {"ok": False, "message": "probe readback mismatch"}
         if backend.delete(probe_path).error:

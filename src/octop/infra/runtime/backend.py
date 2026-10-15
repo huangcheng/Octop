@@ -520,9 +520,18 @@ class RemoteRuntimeBackend(SandboxBackendProtocol):
     ) -> None:
         amount = incoming.on_bytes(n)
         if amount > 0:
-            asyncio.ensure_future(
+            task = asyncio.ensure_future(
                 self._send(link, FrameType.RT_CREDIT, RtCredit(stream_id=stream_id, bytes=amount))
             )
+            task.add_done_callback(self._log_regrant_failure)
+
+    @staticmethod
+    def _log_regrant_failure(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.debug("rt.credit regrant failed", exc_info=exc)
 
     async def _fs_roundtrip(
         self,
@@ -998,13 +1007,15 @@ class RemoteRuntimeBackend(SandboxBackendProtocol):
                 budget = min(hard_left, idle_left)
             try:
                 frame = await self._next_frame(run, timeout=budget)
-            except RemoteOpError:
-                if close_sent:
+            except RemoteOpError as exc:
+                if close_sent and exc.kind is ErrorKind.TIMEOUT:
                     # Spec §8.1: hub timeout → exec.close + grace, then local
                     # resolution.  Exit code 124 mirrors the harness convention.
                     return ExecuteResponse(
                         output=run.merged_output(), exit_code=124, truncated=run.truncated
                     )
+                if close_sent:
+                    raise
                 await self._send(link, FrameType.EXEC_CLOSE, ExecClose(exec_id=run.exec_id))
                 close_sent = True
                 continue

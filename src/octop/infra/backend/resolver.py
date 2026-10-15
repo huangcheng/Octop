@@ -334,5 +334,8 @@ def backend_spec_supports_execution(spec: Any) -> bool:
             backend_spec_supports_execution(route) for route in routes.values()
         ):
             return True
-        return backend_spec_supports_execution(spec.get("exec_target"))
+        exec_target = spec.get("exec_target")
+        if exec_target is not None:
+            return backend_spec_supports_execution(exec_target)
+        return False
     return False

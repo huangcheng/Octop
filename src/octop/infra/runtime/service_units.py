@@ -231,13 +231,16 @@ class RuntimeService:
                 check=False,
             )
             return proc.returncode == 0
+        # LoadState (not is-enabled): a "static" unit exits 0 from is-enabled
+        # even when systemd never loaded the file; "disabled-but-loaded"
+        # exits non-zero and would force pointless rewrites.
         proc = self._runner(
-            ["systemctl", "--user", "is-enabled", SYSTEMD_UNIT_NAME],
+            ["systemctl", "--user", "show", "-p", "LoadState", "--value", SYSTEMD_UNIT_NAME],
             capture_output=True,
             text=True,
             check=False,
         )
-        return proc.returncode == 0
+        return (proc.stdout or "").strip() == "loaded"
 
     def start(self) -> None:
         if self.mode == "launchd":

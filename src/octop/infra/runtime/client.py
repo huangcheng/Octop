@@ -556,11 +556,18 @@ class RuntimeClient:
     async def _keepalive_loop(self, conn: Any) -> None:
         """Application-level keepalive: Starlette hides WS-layer pings from the
         hub, so the hub's idle timeout needs rt.ping frames from the daemon."""
-        while True:
-            await asyncio.sleep(PING_INTERVAL_SECONDS)
-            await conn.send(
-                encode_frame(self._generation, MINOR_VERSION, FrameType.RT_PING, RtPing())
-            )
+        try:
+            while True:
+                await asyncio.sleep(PING_INTERVAL_SECONDS)
+                try:
+                    await conn.send(
+                        encode_frame(self._generation, MINOR_VERSION, FrameType.RT_PING, RtPing())
+                    )
+                except Exception:
+                    logger.debug("keepalive send failed; stopping", exc_info=True)
+                    return
+        except asyncio.CancelledError:
+            return
 
     def _build_hello(self, enrollment: RuntimeEnrollment) -> RtHello:
         roots = enrollment.roots or (str(Path.home()),)

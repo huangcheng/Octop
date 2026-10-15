@@ -909,6 +909,11 @@ class FsExecutor:
             )
         if new_received > self._single_write_cap:
             raise FsError(ErrorKind.QUOTA_EXCEEDED, "single transfer exceeds write cap")
+        # Temp-cap check lives here (single-threaded event loop), not in the
+        # to_thread worker: the check and the increment below must share a
+        # context or concurrent streams can both pass and jointly exceed it.
+        if not stream.append and self._temp_bytes + len(payload.data) > self._temp_cap:
+            raise FsError(ErrorKind.QUOTA_EXCEEDED, "in-flight temp cap reached")
         await self._write_batch(stream, payload.data, new_received)
         stream.received = new_received
         stream.seen += 1
@@ -925,8 +930,6 @@ class FsExecutor:
             if free < 2 * received_after:
                 raise FsError(ErrorKind.QUOTA_EXCEEDED, "insufficient free space (2x pre-check)")
             if not stream.append:
-                if self._temp_bytes + len(data) > self._temp_cap:
-                    raise FsError(ErrorKind.QUOTA_EXCEEDED, "in-flight temp cap reached")
                 tmp_fd = stream.tmp_fd
                 assert tmp_fd is not None  # set by _open_write_target
                 os.write(tmp_fd, data)
@@ -1162,7 +1165,9 @@ class FsExecutor:
             os.close(new_fd)
 
     def _sync_edit(self, payload: FsEdit) -> dict[str, Any]:
-        fd, st = open_regular_file(payload.path, self._load_roots(), os.O_RDWR)
+        # Read-only: mutation happens via temp+rename; O_RDWR would fail on
+        # readable-but-not-writable files with a misleading error.
+        fd, st = open_regular_file(payload.path, self._load_roots(), os.O_RDONLY)
         try:
             # Etag verified INSIDE the path lock (caller holds it).
             current = weak_etag(st)
