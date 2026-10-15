@@ -3,6 +3,7 @@ import { Navigate, useSearchParams } from "react-router-dom";
 import {
   Archive,
   Lock,
+  MonitorSmartphone,
   RefreshCw,
   ShieldCheck,
   Variable,
@@ -14,6 +15,7 @@ import BackupRestorePanel from "../BackupRestore";
 import { HttpsSettingsPanel } from "../HttpsSettings";
 import UpdateConfig from "./UpdateConfig";
 import CaptchaSettingsPanel from "./CaptchaSettings";
+import RuntimeMachinesPanel from "./RuntimeMachines";
 import PageShell from "../../../layouts/PageShell";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
 import tabStyles from "./tabContent.module.less";
@@ -27,7 +29,8 @@ type TabKey =
   | "backup"
   | "https"
   | "updates"
-  | "captcha";
+  | "captcha"
+  | "runtimes";
 
 const TABS: TabBarItem<TabKey>[] = [
   { key: "env-vars", labelKey: "nav.environments", icon: Variable },
@@ -35,6 +38,7 @@ const TABS: TabBarItem<TabKey>[] = [
   { key: "backup", labelKey: "nav.backupRestore", icon: Archive },
   { key: "https", labelKey: "nav.https", icon: Lock },
   { key: "captcha", labelKey: "nav.loginCaptcha", icon: ShieldCheck },
+  { key: "runtimes", labelKey: "nav.runtimes", icon: MonitorSmartphone },
   { key: "updates", labelKey: "nav.checkUpdates", icon: RefreshCw },
 ];
 
@@ -44,7 +48,8 @@ function parseTab(raw: string | null): TabKey {
     raw === "backup" ||
     raw === "https" ||
     raw === "updates" ||
-    raw === "captcha"
+    raw === "captcha" ||
+    raw === "runtimes"
   ) {
     return raw;
   }
@@ -85,6 +90,8 @@ export default function AdvancedSettingsPage() {
         return <UpdateConfig />;
       case "captcha":
         return <CaptchaSettingsPanel />;
+      case "runtimes":
+        return <RuntimeMachinesPanel />;
     }
   };
 

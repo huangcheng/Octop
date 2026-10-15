@@ -71,6 +71,10 @@ export const ADVANCED_TAB_PERMISSIONS = {
   https: "tls",
   updates: "update",
   captcha: "captcha",
+  // Remote machines: the enrollment REST is auth-scoped, but there is no
+  // dedicated module permission yet — keep the tab admin-only until one is
+  // added backend-side.
+  runtimes: "admin",
 } as const;
 
 export const SECURITY_TAB_PERMISSIONS = {

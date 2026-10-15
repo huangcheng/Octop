@@ -48,6 +48,7 @@ from octop.infra.runtime.enrollment_store import (
     EnrollmentStore,
     RuntimeEnrollment,
 )
+from octop.infra.runtime.exec_executor import ExecExecutor
 from octop.infra.runtime.executor import FsExecutor
 from octop.infra.runtime.protocol import (
     FRAME_CAP_BYTES,
@@ -212,6 +213,7 @@ class RuntimeClient:
         clock: Clock | None = None,
         rand: Callable[[], float] | None = None,
         fs_executor: FsExecutor | None = None,
+        exec_executor: ExecExecutor | None = None,
     ) -> None:
         self._store = store
         self._handlers = dict(handlers or {})
@@ -228,8 +230,11 @@ class RuntimeClient:
         self._generation = 0
         self._tasks: set[asyncio.Task[None]] = set()
         self._fs_executor: FsExecutor | None = None
+        self._exec_executor: ExecExecutor | None = None
         if fs_executor is not None:
             self.set_fs_executor(fs_executor)
+        if exec_executor is not None:
+            self.set_exec_executor(exec_executor)
 
     @property
     def generation(self) -> int:
@@ -255,10 +260,40 @@ class RuntimeClient:
                 FrameType.FS_GLOB: executor.handle_fs_glob,
                 FrameType.FS_GREP: executor.handle_fs_grep,
                 FrameType.FS_CANCEL: executor.handle_fs_cancel,
-                FrameType.RT_CREDIT: executor.handle_rt_credit,
+                # With an exec executor bound, rt.credit fans out to both
+                # (each side ignores foreign stream ids).
+                FrameType.RT_CREDIT: (
+                    self._route_credit
+                    if self._exec_executor is not None
+                    else executor.handle_rt_credit
+                ),
             }
         )
         executor.start_sweeper()
+
+    def set_exec_executor(self, executor: ExecExecutor) -> None:
+        """Route ``exec.*`` frames (and ``rt.credit`` for exec streams) to
+        *executor*. Replies ride :meth:`_send_frame`; teardown kills every
+        live exec (session drop = kill all, spec §8.2). Additive: clients
+        without an executor behave exactly as before.
+        """
+        self._exec_executor = executor
+        executor.bind(self._send_frame)
+        self._handlers.update(
+            {
+                FrameType.EXEC_OPEN: executor.handle_exec_open,
+                FrameType.EXEC_INPUT: executor.handle_exec_input,
+                FrameType.EXEC_CLOSE: executor.handle_exec_close,
+                FrameType.RT_CREDIT: self._route_credit,
+            }
+        )
+
+    async def _route_credit(self, frame: FrameEnvelope) -> None:
+        """rt.credit fan-out: each executor ignores foreign stream ids."""
+        if self._fs_executor is not None:
+            await self._fs_executor.handle_rt_credit(frame)
+        if self._exec_executor is not None:
+            await self._exec_executor.handle_rt_credit(frame)
 
     async def stop(self) -> None:
         """Graceful shutdown: send ``rt.bye`` when connected, then close."""
@@ -277,6 +312,8 @@ class RuntimeClient:
             task.cancel()
         if self._fs_executor is not None:
             await self._fs_executor.close()
+        if self._exec_executor is not None:
+            await self._exec_executor.close()
 
     async def run(self) -> None:
         """Dial/serve until a terminal close code, a hold, or :meth:`stop`."""
