@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shutil
 import signal
 import sys
@@ -27,6 +28,8 @@ from octop.infra.runtime.enrollment_store import (
     RuntimeEnrollment,
     new_machine_id,
 )
+from octop.infra.runtime.exec_executor import ExecExecutor
+from octop.infra.runtime.executor import FsExecutor
 
 if TYPE_CHECKING:
     from octop.infra.runtime.service_units import RuntimeService
@@ -146,8 +149,7 @@ def enroll(
     hub_url = _validate_hub_url(server, locale)
     resolved_key = _resolve_key(locale, key, key_file)
     resolved_roots = tuple(
-        str(Path(root).expanduser().resolve(strict=False))
-        for root in (roots or (str(Path.home()),))
+        os.path.normpath(str(Path(root).expanduser())) for root in (roots or (str(Path.home()),))
     )
     resolved_ca = None
     if ca_bundle:
@@ -347,7 +349,14 @@ def run() -> None:
     click.echo(
         tr("runtime.run_starting", locale, hub=enrollment.hub_url, machine_id=enrollment.machine_id)
     )
-    client = RuntimeClient(store, on_status=lambda s: _echo_hold(s, locale))
+    assert enrollment is not None  # checked above
+    roots = tuple(enrollment.roots) if enrollment.roots else (str(Path.home()),)
+    client = RuntimeClient(
+        store,
+        on_status=lambda s: _echo_hold(s, locale),
+        fs_executor=FsExecutor(roots),
+        exec_executor=ExecExecutor(roots),
+    )
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_run_client(client))
     click.echo(tr("runtime.run_stopped", locale))

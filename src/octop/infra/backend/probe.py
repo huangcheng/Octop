@@ -75,11 +75,13 @@ def probe_storage_backend(
     *,
     runtime_session_provider: Any | None = None,
     allow_exec: bool | None = None,
+    default_workspace_base: str | None = None,
 ) -> dict[str, Any]:
     """Return ``{ok: bool, message?: str, message_key?: str}`` after a probe.
 
     ``remote_runtime`` rows probe through a live session: fs write→read→delete
-    under ``.probe/`` plus one execute leg when the enrollment allows exec
+    of a root-level ULID-named temp file plus one execute leg when the
+    enrollment allows exec
     (spec §7.2) — pass the enrollment-resolved ``allow_exec`` (the row→spec
     mapping is pure and cannot see the enrollment table; ``None`` falls back
     to the row config flag, default off).  The caller supplies
@@ -95,7 +97,9 @@ def probe_storage_backend(
         return _probe_opensandbox(row)
 
     if kind == "remote_runtime":
-        return _probe_remote_runtime(row, runtime_session_provider, allow_exec)
+        return _probe_remote_runtime(
+            row, runtime_session_provider, allow_exec, default_workspace_base
+        )
 
     spec = row_to_backend_spec(row)
     if spec is None:
@@ -111,7 +115,10 @@ _REMOTE_PROBE_MARKER = "octop-remote-runtime-probe"
 
 
 def _probe_remote_runtime(
-    row: BackendRow, provider: Any | None, allow_exec: bool | None
+    row: BackendRow,
+    provider: Any | None,
+    allow_exec: bool | None,
+    default_workspace_base: str | None = None,
 ) -> dict[str, Any]:
     """Live-session probe: fs roundtrip under ``.probe/`` + optional exec leg."""
     from octop.infra.runtime.backend import RemoteRuntimeBackend  # noqa: PLC0415
@@ -144,10 +151,15 @@ def _probe_remote_runtime(
         str(spec["enrollment_id"]),
         session_provider=lambda: link,
         allow_exec=bool(allow_exec),
-        workspace_base=str(spec.get("workspace_base") or ""),
+        workspace_base=str(spec.get("workspace_base") or default_workspace_base or ""),
         agent_root=str(spec.get("agent_root") or "auto"),
     )
-    probe_path = f".probe/octop-probe-{uuid.uuid4().hex}.txt"
+    if not backend.content_root:
+        return {
+            "ok": False,
+            "message": "remote runtime backend has no workspace base to probe against",
+        }
+    probe_path = f"octop-probe-{uuid.uuid4().hex}.txt"
     try:
         write_result = backend.write(probe_path, _REMOTE_PROBE_MARKER)
         if write_result.error:

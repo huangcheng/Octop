@@ -201,6 +201,13 @@ async def _session_loop(websocket: WebSocket, session: RuntimeSession) -> None:
                 frame.request_id,
                 getattr(frame.payload, "detail", ""),
             )
+            # The plugged handler (RemoteRuntimeBackend) must see error frames
+            # too: they resolve the waiting op future. Logging alone leaves the
+            # hub-side future hanging until the session dies.
+            handler = session.frame_handler
+            if handler is not None:
+                with contextlib.suppress(Exception):
+                    await handler(frame)
             continue
 
         handler = session.frame_handler

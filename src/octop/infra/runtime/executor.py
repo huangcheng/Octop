@@ -319,7 +319,8 @@ def resolve_parent(path: str, roots: Sequence[str]) -> tuple[str, int, str]:
         parent = os.path.join(root, *(rel_parts[:-1]))
         return root, os.open(parent or root, os.O_RDONLY | os.O_DIRECTORY), rel_parts[-1]
     except OSError as exc:
-        os.close(root_fd)
+        # finally closes root_fd exactly once — closing here too would
+        # raise EBADF and mask the real error (e.g. ENOENT).
         raise _map_loop(exc) from exc
     finally:
         os.close(root_fd)

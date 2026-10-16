@@ -212,7 +212,7 @@ async def probe_storage_backend_config(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Probe connectivity from unsaved form values (optional merge with stored row)."""
-    from octop.infra.backend.probe import probe_storage_backend, row_for_probe
+    from octop.infra.backend.probe import row_for_probe
 
     base = None
     if body.backend_id is not None:
@@ -229,7 +229,7 @@ async def probe_storage_backend_config(
         config_json=body.config_json,
         base=base,
     )
-    return probe_storage_backend(row)
+    return await _probe(row, server)
 
 
 def _storage_browse_octop_error(exc: BaseException) -> OctopError:
@@ -355,9 +355,39 @@ async def test_storage_backend(
     row = server.services.storage_backend_repo.get(backend_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "storage backend not found")
+
+    return await _probe(row, server)
+
+
+async def _probe(row: Any, server: Any) -> dict[str, Any]:
+    """Run the blocking probe off-loop; remote_runtime rows get the live link."""
+    import asyncio  # noqa: PLC0415
+
+    from octop.infra.backend.adapter import row_to_backend_spec
     from octop.infra.backend.probe import probe_storage_backend
 
-    return probe_storage_backend(row)
+    provider = None
+    allow_exec: bool | None = None
+    default_base: str | None = None
+    if str(getattr(row, "kind", "")) == "remote_runtime":
+        hub = getattr(getattr(server, "app_runtime", None), "runtime_backend_hub", None)
+        spec = row_to_backend_spec(row) or {}
+        eid = str(spec.get("enrollment_id") or "")
+        if hub is not None and eid:
+            provider = lambda: hub.link_for(eid)  # noqa: E731
+        enrollment = server.services.repos.runtime_enrollment_repo.get_by_enrollment_id(eid)
+        if enrollment is not None:
+            allow_exec = bool(enrollment.allow_exec)
+            default_base = enrollment.default_workspace_base
+    # The probe drives sync backends (WS round-trips for remote_runtime via
+    # run_coroutine_threadsafe) — it must never block the event loop.
+    return await asyncio.to_thread(
+        probe_storage_backend,
+        row,
+        runtime_session_provider=provider,
+        allow_exec=allow_exec,
+        default_workspace_base=default_base,
+    )
 
 
 user_router = APIRouter()

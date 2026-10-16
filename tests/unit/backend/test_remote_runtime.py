@@ -273,7 +273,10 @@ async def test_probe_remote_runtime_exec_leg_failure_fails_probe() -> None:
     def provider() -> SessionLink | None:
         return link
 
-    row = _row("remote_runtime", {"enrollment_id": "E1"})
+    row = _row(
+        "remote_runtime",
+        {"enrollment_id": "E1", "workspace_base": "/ws", "agent_root": "shared"},
+    )
 
     result = await asyncio.to_thread(
         probe_storage_backend,

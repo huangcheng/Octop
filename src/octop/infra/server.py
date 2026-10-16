@@ -226,6 +226,7 @@ class AppRuntime:
     bridge_manager: Any | None = None
     runtime_registry: RuntimeSessionRegistry | None = None
     runtime_rate_limiter: RuntimeRateLimiter | None = None
+    runtime_backend_hub: Any | None = None
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
@@ -580,6 +581,7 @@ class OctopServer:
             bridge_manager=bridge_mgr,
             runtime_registry=runtime_registry,
             runtime_rate_limiter=RuntimeRateLimiter(),
+            runtime_backend_hub=runtime_hub,
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
