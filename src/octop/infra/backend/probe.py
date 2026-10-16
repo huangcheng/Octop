@@ -120,7 +120,7 @@ def _probe_remote_runtime(
     allow_exec: bool | None,
     default_workspace_base: str | None = None,
 ) -> dict[str, Any]:
-    """Live-session probe: fs roundtrip under ``.probe/`` + optional exec leg."""
+    """Live-session probe: root-level fs roundtrip + optional exec leg."""
     from octop.infra.runtime.backend import RemoteRuntimeBackend  # noqa: PLC0415
 
     spec = row_to_backend_spec(row)

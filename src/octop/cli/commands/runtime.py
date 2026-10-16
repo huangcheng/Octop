@@ -354,6 +354,7 @@ def run() -> None:
     client = RuntimeClient(
         store,
         on_status=lambda s: _echo_hold(s, locale),
+        capabilities=("fs", "exec"),
         fs_executor=FsExecutor(roots),
         exec_executor=ExecExecutor(roots),
     )

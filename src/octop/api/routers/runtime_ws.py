@@ -206,8 +206,13 @@ async def _session_loop(websocket: WebSocket, session: RuntimeSession) -> None:
             # hub-side future hanging until the session dies.
             handler = session.frame_handler
             if handler is not None:
-                with contextlib.suppress(Exception):
+                try:
                     await handler(frame)
+                except Exception:
+                    logger.exception(
+                        "runtime frame handler failed on ERROR frame (%s)",
+                        frame.request_id,
+                    )
             continue
 
         handler = session.frame_handler
