@@ -227,6 +227,7 @@
     "SKILL_PACKAGE_LOCKED": "This skill was copied from a locked skill package and cannot be edited in the workspace.",
     "RUNTIME_OFFLINE": "This remote machine is not connected. Try again once it is online.",
     "RUNTIME_REVOKED": "This remote machine enrollment has been revoked.",
+    "RUNTIME_FORBIDDEN_TARGET": "You cannot run tools on this remote machine.",
     "RUNTIME_UNSUPPORTED": "This remote machine does not support the requested operation.",
     "RUNTIME_ROTATION_PENDING": "A credential rotation is already pending for this machine. Use the new key or wait for it to expire."
   },

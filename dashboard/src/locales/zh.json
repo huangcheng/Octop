@@ -227,6 +227,7 @@
     "SKILL_PACKAGE_LOCKED": "此技能复制自锁定策略的技能包，无法在工作区编辑。",
     "RUNTIME_OFFLINE": "该远程主机当前未连接，请在其上线后重试。",
     "RUNTIME_REVOKED": "该远程主机注册已被吊销。",
+    "RUNTIME_FORBIDDEN_TARGET": "你无法在此远程主机上运行工具。",
     "RUNTIME_UNSUPPORTED": "该远程主机不支持此操作。",
     "RUNTIME_ROTATION_PENDING": "该主机的凭据轮换尚未完成，请使用新密钥或等待其过期。"
   },

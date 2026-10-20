@@ -28,4 +28,7 @@ CREATE INDEX IF NOT EXISTS idx_runtime_enrollments_key_hash
 CREATE INDEX IF NOT EXISTS idx_runtime_enrollments_previous_key_hash
   ON runtime_enrollments(previous_key_hash);
 
+-- threads.run_target / agents.default_run_target: added idempotently in
+-- migrate._ensure_runtime_run_target_schema (SQLite cannot re-ADD COLUMN).
+
 UPDATE _schema_version SET version = 25;

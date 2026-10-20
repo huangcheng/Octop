@@ -47,6 +47,7 @@ class ThreadRow:
     conversation_mode: str | None = None
     pending_plan_path: str | None = None
     hitl_policy: str | None = None
+    run_target: str | None = None
 
     @classmethod
     def from_row(cls, r: DbRow) -> ThreadRow:
@@ -66,6 +67,10 @@ class ThreadRow:
             hitl_policy = r["hitl_policy"]
         except (KeyError, IndexError):
             hitl_policy = None
+        try:
+            run_target = r["run_target"]
+        except (KeyError, IndexError):
+            run_target = None
         return cls(
             id=r["id"],
             thread_id=r["thread_id"],
@@ -84,6 +89,7 @@ class ThreadRow:
             conversation_mode=str(conversation_mode) if conversation_mode else None,
             pending_plan_path=str(pending_plan_path) if pending_plan_path else None,
             hitl_policy=str(hitl_policy) if hitl_policy else None,
+            run_target=str(run_target) if run_target else None,
         )
 
 
@@ -293,6 +299,7 @@ class ThreadRepo:
         conversation_mode: str | None | object = ...,
         pending_plan_path: str | None | object = ...,
         hitl_policy: str | None | object = ...,
+        run_target: str | None | object = ...,
     ) -> None:
         fields: list[str] = []
         params: list[object] = []
@@ -303,6 +310,7 @@ class ThreadRepo:
             ("conversation_mode", conversation_mode),
             ("pending_plan_path", pending_plan_path),
             ("hitl_policy", hitl_policy),
+            ("run_target", run_target),
         ):
             if value is ...:
                 continue

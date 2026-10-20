@@ -1607,6 +1607,14 @@ def _ensure_user_group_profile_schema(db: DatabasePool) -> None:
     _ensure_column(db, "user_group", "avatar_icon", "TEXT")
 
 
+def _ensure_runtime_run_target_schema(db: DatabasePool) -> None:
+    """Thread/agent run-target columns for remote runtime routing (v25)."""
+    if _table_exists(db, "threads"):
+        _ensure_column(db, "threads", "run_target", "TEXT")
+    if _table_exists(db, "agents"):
+        _ensure_column(db, "agents", "default_run_target", "TEXT")
+
+
 def _ensure_bridge_connections_schema(db: DatabasePool) -> None:
     """Fold notes + unique display_name + auto_reconnect into unreleased v19."""
     if not _table_exists(db, "bridge_connections"):
@@ -2136,5 +2144,6 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_skill_package_download_schema(db)
     _ensure_skill_package_shared_schema(db)
     _ensure_user_group_profile_schema(db)
+    _ensure_runtime_run_target_schema(db)
     _grant_default_nav_permissions(db)
     _grant_personalization_tab_permissions(db)

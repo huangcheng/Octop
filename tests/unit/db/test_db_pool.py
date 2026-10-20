@@ -130,6 +130,7 @@ def test_run_migrations_idempotent(db: SqlitePool):
         "conversation_mode",
         "pending_plan_path",
         "hitl_policy",
+        "run_target",
     }.issubset(thread_cols)
     assert {
         "color",
@@ -140,6 +141,7 @@ def test_run_migrations_idempotent(db: SqlitePool):
         "welcome_message",
         "knowledge_base_ids",
         "mcp_servers",
+        "default_run_target",
     }.issubset(agent_cols)
     assert "skill_packages" in table_names
     assert "runtime_enrollments" in table_names
