@@ -303,6 +303,23 @@ class RuntimeBackendHub:
             self._backends[key] = backend
             return backend
 
+    def invalidate(self, enrollment_id: str | None = None) -> int:
+        """Drop cached proxies (all, or for one enrollment). Spec §6.2 cache.
+
+        Call on revoke, rotate, ``allow_exec`` PATCH, or session drop so the
+        next ``backend_for`` re-reads enrollment state.
+        """
+        with self._lock:
+            if enrollment_id is None:
+                n = len(self._backends)
+                self._backends.clear()
+                return n
+            eid = str(enrollment_id)
+            keys = [key for key in self._backends if key[0] == eid]
+            for key in keys:
+                del self._backends[key]
+            return len(keys)
+
 
 class _IncomingCredit:
     """Hub→runtime regrant state for one rt→hub data stream.

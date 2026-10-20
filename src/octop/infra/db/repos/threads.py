@@ -167,13 +167,14 @@ class ThreadRepo:
         session_key: str,
         title: str | None = None,
         last_active: int | None = None,
+        run_target: str | None = None,
     ) -> None:
         ts = now_ts()
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO threads(thread_id, agent_id, user_id, channel_type, "
-                "session_key, title, last_active, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "session_key, title, last_active, created_at, run_target) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     thread_id,
                     agent_id,
@@ -183,6 +184,7 @@ class ThreadRepo:
                     clip_thread_title(title) if title else None,
                     ts if last_active is None else last_active,
                     ts,
+                    run_target,
                 ),
             )
             conn.execute(
@@ -369,3 +371,15 @@ class ThreadRepo:
     def delete(self, thread_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
+
+    def invalidate_run_targets(self, enrollment_id: str) -> int:
+        """Mark threads targeting *enrollment_id* as ``invalid`` (revoke §8.2)."""
+        eid = (enrollment_id or "").strip()
+        if not eid:
+            return 0
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE threads SET run_target = 'invalid' WHERE run_target = ?",
+                (eid,),
+            )
+            return int(cur.rowcount or 0)

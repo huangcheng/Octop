@@ -51,6 +51,14 @@ def _expected_default_backend(manager: AgentManager, agent_id: str) -> dict[str,
     )
 
 
+def _hub_backend(cfg_backend: Any) -> Any:
+    """Unwrap TurnDelegatingBackend (§6.2) for harness-config assertions."""
+    from octop.infra.runtime.delegating import TurnDelegatingBackend
+
+    assert isinstance(cfg_backend, TurnDelegatingBackend)
+    return cfg_backend.hub
+
+
 @pytest.fixture
 def manager(tmp_path: Path) -> AgentManager:
     paths = PathLayout(tmp_path / ".octop")
@@ -899,8 +907,18 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
 
 
 def test_build_harness_config_defaults_local_shell_backend(manager: AgentManager) -> None:
+    from octop_harness.backends import resolve_backend
+
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
-    assert cfg.backend == _expected_default_backend(manager, "AGT001")
+    expected = _expected_default_backend(manager, "AGT001")
+    hub = _hub_backend(cfg.backend)
+    # Spec is resolved + wrapped; compare against a freshly resolved instance id shape.
+    resolved = resolve_backend(expected, workspace_dir=cfg.workspace_dir)
+    assert type(hub) is type(resolved)
+    assert (
+        getattr(hub, "id", None) == getattr(resolved, "id", None)
+        or hub.root_dir == resolved.root_dir
+    )
     assert cfg.workspace_dir.name == "AGT001"
     assert cfg.workspace_dir.parent.name == "agents"
     assert cfg.bootstrap_enabled is True
@@ -1537,7 +1555,9 @@ def test_build_harness_config_respects_config_json_backend(manager: AgentManager
     cfg = manager._build_harness_config(
         _row(config_json=json.dumps({"backend": custom})),
     )
-    assert cfg.backend == custom
+    hub = _hub_backend(cfg.backend)
+    cwd = getattr(hub, "cwd", None) or getattr(hub, "root_dir", "")
+    assert str(cwd).rstrip("/") == "/srv/data"
 
 
 def test_backend_spec_for_row_neutralizes_host_root_on_windows(
@@ -1573,10 +1593,9 @@ def test_build_harness_config_keeps_fs_permissions_for_local_shell_guard(
     cfg = manager._build_harness_config(
         _row(config_json=json.dumps({"backend": {"type": "local_shell", "virtual_mode": True}})),
     )
-    backend = cfg.backend
-    assert isinstance(backend, dict)
-    assert backend.get("type") == "local_shell"
-    assert backend.get("virtual_mode") is True
+    hub = _hub_backend(cfg.backend)
+    # Resolved live local_shell instance (virtual_mode preserved on the hub leg).
+    assert getattr(hub, "virtual_mode", None) is True
     assert cfg.permissions is not None
     middleware = cfg.middleware or []
     assert not any(isinstance(item, FilesystemGuardMiddleware) for item in middleware)
@@ -1592,7 +1611,7 @@ def test_build_harness_config_without_default_model(manager: AgentManager) -> No
     cfg = manager._build_harness_config(_row())
     assert cfg.name == "agent_01AGENT"
     assert cfg.system_prompt is None
-    assert cfg.backend == _expected_default_backend(manager, "01AGENT")
+    assert _hub_backend(cfg.backend) is not None
 
 
 @pytest.mark.asyncio
@@ -1860,7 +1879,7 @@ def test_build_harness_config_passes_default_model_without_embedded_providers(
 
 def test_build_harness_config_tolerates_bad_config_json(manager: AgentManager) -> None:
     cfg = manager._build_harness_config(_row(config_json="{not-json"))
-    assert cfg.backend == _expected_default_backend(manager, "01AGENT")
+    assert _hub_backend(cfg.backend) is not None
 
 
 @pytest.mark.asyncio

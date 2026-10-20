@@ -135,6 +135,8 @@ def test_workspace_uses_prebuilt_hub_instance(services: Any) -> None:
 
 
 def test_harness_config_reuses_prebuilt_instance(services: Any) -> None:
+    from octop.infra.runtime.delegating import TurnDelegatingBackend
+
     _enroll(services)
     row = _agent_row(services)
     hub = _StubHub()
@@ -142,7 +144,10 @@ def test_harness_config_reuses_prebuilt_instance(services: Any) -> None:
 
     cfg = manager._build_harness_config(row)
 
-    assert cfg.backend is hub.backend
+    # Spec §6.2: harness backend is wrapped in TurnDelegatingBackend; the hub
+    # leg must still be the stable prebuilt remote proxy (not a second resolve).
+    assert isinstance(cfg.backend, TurnDelegatingBackend)
+    assert cfg.backend.hub is hub.backend
 
 
 def test_workspace_without_hub_fails_fast(services: Any) -> None:

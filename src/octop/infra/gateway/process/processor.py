@@ -195,6 +195,63 @@ class GlobalProcessor:
             hitl_coordinator=self._hitl,
         )
 
+    def _dashboard_turn_backend_scope(
+        self,
+        *,
+        agent_id: str,
+        thread_id: str,
+        channel_type: str,
+        user_id: int | None,
+    ) -> Any:
+        """Freeze the per-turn delegating backend for dashboard chat (§6.2).
+
+        IM/cron/gateway leave the ContextVar unset so tools stay on the hub
+        leg. Returns a context manager (possibly a no-op).
+        """
+        from contextlib import nullcontext  # noqa: PLC0415
+
+        from octop.infra.gateway.threads import ThreadRegistry  # noqa: PLC0415
+        from octop.infra.runtime.delegating import turn_backend_scope  # noqa: PLC0415
+        from octop.infra.runtime.turn_bind import bind_turn_backend  # noqa: PLC0415
+        from octop.infra.runtime.turn_routing import (  # noqa: PLC0415
+            RUN_TARGET_HUB,
+            resolve_dashboard_run_target,
+        )
+
+        if channel_type != ThreadRegistry.CHANNEL_DASHBOARD or user_id is None:
+            return nullcontext()
+        thread = self._thread_registry.get_thread(thread_id)
+        raw_target = getattr(thread, "run_target", None) if thread is not None else None
+        repos = getattr(self._agent_manager, "_repos", None)
+        enrollment_repo = (
+            getattr(repos, "runtime_enrollment_repo", None) if repos is not None else None
+        )
+        try:
+            resolved = resolve_dashboard_run_target(
+                raw_target,
+                enrollment_repo=enrollment_repo,
+                acting_user_id=int(user_id),
+            )
+        except OctopError:
+            from octop.infra.runtime.delegating import build_fail_closed_revoked  # noqa: PLC0415
+
+            return turn_backend_scope(build_fail_closed_revoked())
+        if resolved.effective == RUN_TARGET_HUB and not resolved.fail_closed:
+            return nullcontext()
+        runtime_hub = getattr(self._agent_manager, "_runtime_hub", None)
+        workspace = harness_workspace_for_agent(self._agent_manager, agent_id)
+        hub_backend = workspace.backend if workspace is not None else None
+        workspace_dir = workspace.workspace_dir if workspace is not None else None
+        frozen = bind_turn_backend(
+            resolved,
+            hub_backend=hub_backend,
+            runtime_hub=runtime_hub,
+            enrollment_repo=enrollment_repo,
+            agent_id=agent_id,
+            workspace_dir=workspace_dir,
+        )
+        return turn_backend_scope(frozen)
+
     async def _begin_history(
         self, agent_id: str, thread_id: str, request: dict[str, Any], *, resume: bool = False
     ) -> TurnHistoryTracker:
@@ -1196,6 +1253,14 @@ class GlobalProcessor:
         emitted_media_ids: set[str] = set()
         emitted_attachment_keys: set[str] = set()
         emitted_tool_error_ids: set[str] = set()
+        # Manual enter/exit so the existing try/except/finally indent stays put.
+        _turn_backend_cm = self._dashboard_turn_backend_scope(
+            agent_id=agent_id,
+            thread_id=thread_id,
+            channel_type=channel_type,
+            user_id=user_id,
+        )
+        _turn_backend_cm.__enter__()
 
         try:
             async for chunk in iter_with_session_auto_approve(
@@ -1291,6 +1356,7 @@ class GlobalProcessor:
             failure_saved = True
             yield _maybe_stamp_team_host(payload, agent_id, team_host)
         finally:
+            _turn_backend_cm.__exit__(None, None, None)
             self._finish_trajectory(thread_id=thread_id, usage=usage_tracker.usage, enabled=traj_on)
             if not failure_saved and not stream_ok:
                 await self._persist_incomplete_turn(

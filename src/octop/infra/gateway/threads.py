@@ -449,6 +449,7 @@ class ThreadRegistry:
         title: str | None = None,
         last_active: int = 0,
         thread_id: str | None = None,
+        run_target: str | None = None,
     ) -> str:
         """Insert a thread row without rebinding the active session."""
         tid = thread_id or _new_thread_id()
@@ -460,6 +461,7 @@ class ThreadRegistry:
             session_key=session_key,
             title=title,
             last_active=last_active,
+            run_target=run_target,
         )
         return tid
 

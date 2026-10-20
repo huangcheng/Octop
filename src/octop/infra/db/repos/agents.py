@@ -75,6 +75,7 @@ class AgentRow:
     knowledge_base_ids: str | None = None
     mcp_servers: str | None = None
     kind: str = "expert"
+    default_run_target: str | None = None
 
     @classmethod
     def from_row(cls, r: DbRow) -> AgentRow:
@@ -116,6 +117,7 @@ class AgentRow:
             knowledge_base_ids=_opt_str(r, "knowledge_base_ids"),
             mcp_servers=_opt_str(r, "mcp_servers"),
             kind=kind,
+            default_run_target=_opt_str(r, "default_run_target"),
         )
 
 
@@ -276,6 +278,7 @@ class AgentRepo:
         welcome_message: str | None | object = UNSET,
         knowledge_base_ids: str | None | object = UNSET,
         mcp_servers: str | None | object = UNSET,
+        default_run_target: str | None | object = UNSET,
     ) -> None:
         fields, params = optional_updates(
             [
@@ -295,6 +298,7 @@ class AgentRepo:
                 ("welcome_message", welcome_message),
                 ("knowledge_base_ids", knowledge_base_ids),
                 ("mcp_servers", mcp_servers),
+                ("default_run_target", default_run_target),
             ]
         )
         if not fields:
@@ -304,6 +308,19 @@ class AgentRepo:
         params.append(agent_id)
         with self._db.transaction() as conn:
             conn.execute(f"UPDATE agents SET {', '.join(fields)} WHERE agent_id = ?", params)
+
+    def clear_default_run_target(self, enrollment_id: str) -> int:
+        """Clear agent defaults pointing at a revoked enrollment."""
+        eid = (enrollment_id or "").strip()
+        if not eid:
+            return 0
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE agents SET default_run_target = NULL, updated_at = ? "
+                "WHERE default_run_target = ?",
+                (now_ts(), eid),
+            )
+            return int(cur.rowcount or 0)
 
     def delete(self, agent_id: str) -> None:
         with self._db.transaction() as conn:

@@ -4166,11 +4166,14 @@ class AgentManager:
         # read/ls surface (S3 / Postgres / COS / …) to ReadResult/LsResult,
         # and to the prebuilt remote_runtime proxy (a second instance would
         # orphan the stable in-flight future set, spec §7.2).
+        from octop_harness.backends import resolve_backend  # noqa: PLC0415
+
         from octop.infra.backend.compat import (  # noqa: PLC0415
             is_adapted_backend,
             is_remote_backend_spec,
             is_remote_runtime_spec,
         )
+        from octop.infra.runtime.delegating import TurnDelegatingBackend  # noqa: PLC0415
 
         harness_backend: Any = (
             ws.backend
@@ -4182,6 +4185,17 @@ class AgentManager:
             )
             else backend
         )
+        # Spec §6.2: stable per-agent proxy; dashboard turns freeze a target via
+        # ContextVar. IM/cron leave the context unset → this hub backend.
+        # Dict specs must be resolved first — wrapping a dict breaks harness
+        # init (mkdir / mount introspection).
+        if isinstance(harness_backend, dict):
+            harness_backend = resolve_backend(
+                harness_backend,
+                workspace_dir=harness_workspace,
+            )
+        if not isinstance(harness_backend, TurnDelegatingBackend):
+            harness_backend = TurnDelegatingBackend(harness_backend)
 
         harness_fields: dict[str, Any] = {}
         if "decision" in _HARNESS_AGENT_CONFIG_FIELDS:
@@ -4202,7 +4216,7 @@ class AgentManager:
             ),
             system_prompt=system_prompt,
             memory=memory,
-            backend=harness_backend,  # spec, or live OpenSandbox instance
+            backend=harness_backend,  # turn-delegating wrap over hub / remote proxy
             mcp_server_configs=mcp_server_configs,
             tools=merged_tools or None,
             middleware=agent_middleware or None,

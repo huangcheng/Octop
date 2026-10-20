@@ -82,7 +82,16 @@ async def list_runtimes(
 ) -> list[dict[str, Any]]:
     repo = _repo(server)
     rows = repo.list_all() if user.is_admin else repo.list_for_user(user.id)
-    return [_public(r) for r in rows]
+    # Spec §8.2: list filters revoked; include ``online`` for first paint.
+    registry = getattr(getattr(server, "app_runtime", None), "runtime_registry", None)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if str(row.status) == "revoked":
+            continue
+        item = _public(row)
+        item["online"] = bool(registry is not None and registry.online(row.enrollment_id))
+        out.append(item)
+    return out
 
 
 @router.post("/runtimes", status_code=201, summary="Issue a runtime enrollment")
@@ -139,11 +148,29 @@ async def revoke_runtime(
     user: User = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
+    from octop.infra.runtime.lifecycle import apply_revoke_side_effects  # noqa: PLC0415
+
     repo = _repo(server)
-    _owned(repo, enrollment_id, user)
+    owned = _owned(repo, enrollment_id, user)
     row = repo.revoke(enrollment_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "enrollment not found")
+    rt = getattr(server, "app_runtime", None)
+    services = getattr(server, "services", None)
+    repos = getattr(services, "repos", None) if services is not None else None
+    ws_hub = None
+    if rt is not None:
+        gateway = getattr(rt, "gateway", None)
+        ws_hub = getattr(gateway, "ws_hub", None) if gateway is not None else None
+    await apply_revoke_side_effects(
+        enrollment_id=enrollment_id,
+        owner_user_id=owned.owner_user_id,
+        registry=getattr(rt, "runtime_registry", None) if rt is not None else None,
+        runtime_hub=getattr(rt, "runtime_backend_hub", None) if rt is not None else None,
+        thread_repo=getattr(repos, "thread_repo", None) if repos is not None else None,
+        agent_repo=getattr(repos, "agent_repo", None) if repos is not None else None,
+        ws_hub=ws_hub,
+    )
     return _public(row)
 
 

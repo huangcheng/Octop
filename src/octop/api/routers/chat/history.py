@@ -140,6 +140,7 @@ async def list_threads(
             "conversation_mode": r.conversation_mode or "craft",
             "pending_plan_path": r.pending_plan_path,
             "hitl_policy": _hitl_policy_payload(r),
+            "run_target": r.run_target,
             "turn_active": hub.is_turn_active(r.thread_id),
             "awaiting_user": r.thread_id in awaiting_ids,
             **thread_artifacts_payload(
@@ -230,7 +231,7 @@ async def create_thread(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Start a new conversation (/new equivalent for dashboard)."""
-    require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    agent_row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
     effective_uid = as_user if as_user is not None else user.id
     sk = ThreadRegistry.dashboard_key(agent_id=agent_id, user_id=effective_uid)
     tid = await server.app_runtime.gateway.thread_registry.reset(
@@ -239,7 +240,17 @@ async def create_thread(
         channel_type=ThreadRegistry.CHANNEL_DASHBOARD,
         channel_subject_id=str(effective_uid),
     )
-    return {"thread_id": tid, "session_key": sk}
+    # Q1: seed run_target from agent default_run_target when still active+owned.
+    from octop.infra.runtime.turn_routing import default_thread_run_target  # noqa: PLC0415
+
+    seeded = default_thread_run_target(
+        agent_default=getattr(agent_row, "default_run_target", None),
+        enrollment_repo=server.services.repos.runtime_enrollment_repo,
+        acting_user_id=effective_uid,
+    )
+    if seeded is not None:
+        server.app_runtime.gateway.thread_registry.update_composer(tid, run_target=seeded)
+    return {"thread_id": tid, "session_key": sk, "run_target": seeded}
 
 
 def _parse_csv_query(raw: str | None) -> list[str] | None:
@@ -537,6 +548,7 @@ async def patch_thread(
         "reasoning_effort",
         "conversation_mode",
         "hitl_policy",
+        "run_target",
     }
     if (
         body.title is None
@@ -553,6 +565,7 @@ async def patch_thread(
             "conversation_mode": row.conversation_mode or "craft",
             "pending_plan_path": row.pending_plan_path,
             "hitl_policy": _hitl_policy_payload(row),
+            "run_target": row.run_target,
         }
     registry = server.app_runtime.gateway.thread_registry
     if body.title is not None:
@@ -564,6 +577,7 @@ async def patch_thread(
     reasoning_effort: str | None | object = ...
     conversation_mode: str | None | object = ...
     pending_plan_path: str | None | object = ...
+    run_target: str | None | object = ...
     if "model_ref" in body.model_fields_set:
         model_ref = (body.model_ref or "").strip() or None
         if (
@@ -596,6 +610,47 @@ async def patch_thread(
             thread_id,
             policy,
         )
+    if "run_target" in body.model_fields_set:
+        from octop.infra.runtime.turn_routing import (  # noqa: PLC0415
+            RUN_TARGET_INVALID,
+            normalize_run_target,
+            resolve_dashboard_run_target,
+        )
+
+        # Spec §5.2: IM/cron reject run_target PATCH with 400 (wins over 409).
+        if row.channel_type != ThreadRegistry.CHANNEL_DASHBOARD:
+            raise OctopError(
+                ErrorCode.RUNTIME_UNSUPPORTED,
+                "run_target is only writable on dashboard threads",
+                status=400,
+            )
+        ws_hub = getattr(server.app_runtime.gateway, "ws_hub", None)
+        if ws_hub is not None and ws_hub.is_turn_active(thread_id):
+            raise OctopError(
+                ErrorCode.THREAD_TURN_ACTIVE,
+                error_message(ErrorCode.THREAD_TURN_ACTIVE.value, "en"),
+                status=409,
+            )
+        normalized = normalize_run_target(body.run_target)
+        if normalized == RUN_TARGET_INVALID:
+            raise OctopError(
+                ErrorCode.RUNTIME_UNSUPPORTED,
+                "run_target=invalid is server-set on revoke; pick hub or a machine",
+                status=400,
+            )
+        if normalized is not None:
+            # Validate ownership / active enrollment (raises FORBIDDEN/REVOKED).
+            resolve_dashboard_run_target(
+                normalized,
+                enrollment_repo=server.services.repos.runtime_enrollment_repo,
+                acting_user_id=user.id,
+            )
+            run_target = normalized
+            # Q1: chip selection also seeds agent default_run_target.
+            server.services.repos.agent_repo.update_config(agent_id, default_run_target=normalized)
+        else:
+            run_target = None
+            server.services.repos.agent_repo.update_config(agent_id, default_run_target=None)
     registry.update_composer(
         thread_id,
         model_ref=model_ref,
@@ -603,6 +658,7 @@ async def patch_thread(
         reasoning_effort=reasoning_effort,
         conversation_mode=conversation_mode,
         pending_plan_path=pending_plan_path,
+        run_target=run_target,
     )
     updated = registry.get_thread(thread_id)
     assert updated is not None
@@ -616,6 +672,7 @@ async def patch_thread(
         "conversation_mode": updated.conversation_mode or "craft",
         "pending_plan_path": updated.pending_plan_path,
         "hitl_policy": _hitl_policy_payload(updated),
+        "run_target": updated.run_target,
     }
 
 

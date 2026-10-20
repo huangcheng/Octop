@@ -199,6 +199,13 @@ class RenameThreadBody(BaseModel):
     reasoning_effort: str | None = None
     conversation_mode: Literal["ask", "plan", "craft"] | None = None
     hitl_policy: HitlSessionPolicyBody | None = None
+    run_target: str | None = Field(
+        default=None,
+        description=(
+            'Dashboard run target: omit to leave unchanged; null/empty/"hub" for '
+            '云端电脑; enrollment id for a machine; "invalid" is server-set only.'
+        ),
+    )
 
 
 class HitlResumeBody(BaseModel):

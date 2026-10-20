@@ -174,6 +174,16 @@ class RuntimeSessionRegistry:
         with self._lock:
             return bool(self._live_sessions(enrollment_id))
 
+    async def close_enrollment(self, enrollment_id: str, *, code: int, reason: str = "") -> int:
+        """Close every live session for *enrollment_id*. Returns closed count.
+
+        Used on revoke (``4002``) so in-flight remote ops die ``RUNTIME_REVOKED``.
+        """
+        sessions = self.sessions(enrollment_id)
+        for session in sessions:
+            await session.close_with(code, reason)
+        return len(sessions)
+
     def online_enrollment_ids(self) -> set[str]:
         with self._lock:
             return {
