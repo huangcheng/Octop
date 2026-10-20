@@ -19,6 +19,7 @@ from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
 from octop.infra.db.repos.published_experts import PublishedExpertRepo
+from octop.infra.db.repos.resource_group_grants import ResourceGroupGrantRepo
 from octop.infra.db.repos.runtime_enrollments import RuntimeEnrollmentRepo
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.sessions import SessionRepo
@@ -29,6 +30,8 @@ from octop.infra.db.repos.thread_messages import ThreadMessageRepo
 from octop.infra.db.repos.threads import ThreadRepo
 from octop.infra.db.repos.trajectory_events import TrajectoryEventRepo
 from octop.infra.db.repos.usage import UsageRepo
+from octop.infra.db.repos.user_group_members import UserGroupMemberRepo
+from octop.infra.db.repos.user_groups import UserGroupRepo
 from octop.infra.db.repos.user_policies import UserPolicyRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.db.repos.voice_providers import VoiceProviderRepo
@@ -64,6 +67,9 @@ class RepoBundle:
     care_push_repo: CarePushRepo
     proactive_care_config_repo: ProactiveCareConfigRepo
     sso_repo: SsoRepo
+    user_group_repo: UserGroupRepo
+    user_group_member_repo: UserGroupMemberRepo
+    resource_group_grant_repo: ResourceGroupGrantRepo
     runtime_enrollment_repo: RuntimeEnrollmentRepo
 
     @classmethod
@@ -95,6 +101,9 @@ class RepoBundle:
             care_push_repo=CarePushRepo(db),
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),
+            user_group_repo=UserGroupRepo(db),
+            user_group_member_repo=UserGroupMemberRepo(db),
+            resource_group_grant_repo=ResourceGroupGrantRepo(db),
             runtime_enrollment_repo=RuntimeEnrollmentRepo(db),
         )
 

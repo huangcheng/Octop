@@ -203,6 +203,44 @@ def test_build_harness_configs_maps_context_window_to_max_input_tokens(
     assert providers[0].models[0].max_input_tokens == 1_000_000
 
 
+def test_build_harness_configs_preserves_api_mode(store: ProviderStore) -> None:
+    store._provider_repo.create(
+        name="relay",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps(
+            [{"id": "gpt-X", "name": "GPT X", "enabled": True, "api_mode": "responses"}]
+        ),
+    )
+
+    providers = store.build_harness_configs()
+    assert providers[0].models[0].api_mode == "responses"
+
+
+def test_build_harness_configs_preserves_api_fallback(store: ProviderStore) -> None:
+    store._provider_repo.create(
+        name="relay",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps(
+            [
+                {
+                    "id": "gpt-X",
+                    "name": "GPT X",
+                    "enabled": True,
+                    "api_mode": "responses",
+                    "api_fallback": "chat_completions",
+                }
+            ]
+        ),
+    )
+
+    providers = store.build_harness_configs()
+    assert providers[0].models[0].api_fallback == "chat_completions"
+
+
 def test_resolve_default_model_returns_none_when_stale(store: ProviderStore) -> None:
     store._provider_repo.create(
         name="hai",
@@ -394,3 +432,42 @@ def test_resolve_multimodal_model_ref_prefers_inferred_vision_model(store: Provi
         ),
     )
     assert store.resolve_multimodal_model_ref() == "p/gpt-4o"
+
+
+def test_list_auto_route_candidates_filters_and_preserves_capacity(
+    store: ProviderStore,
+) -> None:
+    store._provider_repo.create(
+        name="p",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps(
+            [
+                {
+                    "id": "text",
+                    "enabled": True,
+                    "input": ["text"],
+                    "max_input_tokens": 8_000,
+                },
+                {
+                    "id": "vision",
+                    "enabled": True,
+                    "input": ["text", "image"],
+                    "context_window": 32_000,
+                },
+                {"id": "disabled", "enabled": False, "context_window": 99_000},
+            ]
+        ),
+    )
+
+    all_candidates = store.list_auto_route_candidates(needs_multimodal=False)
+    vision_candidates = store.list_auto_route_candidates(needs_multimodal=True)
+
+    assert [(item.ref, item.max_input_tokens) for item in all_candidates] == [
+        ("p/text", 8_000),
+        ("p/vision", 32_000),
+    ]
+    assert [(item.ref, item.max_input_tokens) for item in vision_candidates] == [
+        ("p/vision", 32_000)
+    ]

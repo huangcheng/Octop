@@ -20,6 +20,11 @@ class PathLayout:
         return cls(Path.home() / ".octop")
 
     @property
+    def wizard_password_file(self) -> Path:
+        """Initial wizard password file: ``~/.octop/octop-login.txt`` (or ``$OCTOP_HOME/octop-login.txt``)."""
+        return self.root / "octop-login.txt"
+
+    @property
     def db(self) -> Path:
         return self.root / "octop.db"
 
@@ -129,6 +134,11 @@ class PathLayout:
     def role_avatars_dir(self) -> Path:
         """Uploaded role portraits: ``~/.octop/avatars/roles/``."""
         return self.root / "avatars" / "roles"
+
+    @property
+    def group_avatars_dir(self) -> Path:
+        """Uploaded user-group portraits: ``~/.octop/avatars/groups/``."""
+        return self.root / "avatars" / "groups"
 
     @property
     def ssl_dir(self) -> Path:

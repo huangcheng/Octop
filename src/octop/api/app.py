@@ -160,6 +160,7 @@ def build_app(server: OctopServer) -> FastAPI:
         acp,
         admin,
         agent_files,
+        agent_mcp,
         agent_tools,
         agents,
         auth,
@@ -207,11 +208,13 @@ def build_app(server: OctopServer) -> FastAPI:
         update,
         uploads,
         usage,
+        user_groups,
         user_roles,
         users,
         voice,
         workspace,
     )
+    from octop.api.routers.decision import router as decision_router
     from octop.api.routers.filesystem import router as filesystem_router
     from octop.api.routers.observability import router as observability_router
     from octop.api.routers.providers import admin_router as admin_providers_router
@@ -235,10 +238,12 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(health.router, "/api/health", ["health"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),
             _RouterMount(user_roles.router, "/api/users/roles", ["users"]),
+            _RouterMount(user_groups.router, "/api/user-groups", ["users"]),
             _RouterMount(users.router, "/api/users", ["users"]),
             _RouterMount(agents.router, "/api/agents", ["agents"]),
             _RouterMount(agent_tools.router, "/api", ["agents"]),
             _RouterMount(acp.router, "/api", ["agents"]),
+            _RouterMount(agent_mcp.router, "/api", ["agent-mcp"]),
             _RouterMount(chat.router, "/api", ["chat"]),
             _RouterMount(slash.router, "/api", ["slash"]),
             _RouterMount(connectors.router, "/api", ["connectors"]),
@@ -250,6 +255,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(channels.router, "/api", ["channels"]),
             _RouterMount(cron.router, "/api", ["cron"]),
             _RouterMount(settings.router, "/api", ["settings"]),
+            _RouterMount(decision_router, "/api", ["settings"]),
             _RouterMount(envs.router, "/api", ["envs"]),
             _RouterMount(search.router, "/api", ["search"]),
             _RouterMount(providers.router, "/api/providers", ["providers"]),

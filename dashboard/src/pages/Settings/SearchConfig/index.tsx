@@ -14,7 +14,6 @@ import { envsApi } from "../../../api/modules/env";
 import api from "../../../api";
 import { customProviderLogo, getProviderLogo } from "../../../assets/providers";
 import { apiErrorMessage } from "../../../utils/apiError";
-import { TabPanelHeader } from "../AdvancedSettings/TabPanelHeader";
 import styles from "./index.module.less";
 
 const { Text } = Typography;
@@ -43,6 +42,14 @@ const SEARCH_PROVIDERS: SearchProvider[] = [
     descriptionKey: "setupWizard.search.providers.brave.desc",
     docs_url: "https://api.search.brave.com/",
     required_keys: ["BRAVE_API_KEY"],
+    configured: false,
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek Search",
+    descriptionKey: "setupWizard.search.providers.deepseek.desc",
+    docs_url: "https://api-docs.deepseek.com/guides/search/",
+    required_keys: ["DEEPSEEK_API_KEY"],
     configured: false,
   },
   {
@@ -329,11 +336,7 @@ export default function SearchConfigPage() {
 
   return (
     <>
-      <TabPanelHeader
-        icon={<Search size={22} />}
-        title={t("models.searchModelsTab")}
-        description={t("advancedSettings.search.desc")}
-      />
+      <p className={styles.intro}>{t("advancedSettings.search.desc")}</p>
 
       <div
         className={`${styles.status} ${activeSource ? styles.statusOk : ""}`}

@@ -23,13 +23,14 @@ _WEB_SEARCH_TOOLS: frozenset[str] = frozenset(
     {
         "tavily_search",
         "brave_search",
+        "deepseek_search",
         "google_search",
         "kimi_search",
         "searchfree_search",
     }
 )
 _MEDIA_TOOLS: frozenset[str] = frozenset({"generate_image", "generate_video"})
-_MEMORY_TOOLS: frozenset[str] = frozenset({"memory_search", "memory_get"})
+_MEMORY_TOOLS: frozenset[str] = frozenset({"memory_search", "memory_get", "memory_save"})
 _MOBILE_TOOLS: frozenset[str] = frozenset(
     {
         "mobile_screenshot",
@@ -71,6 +72,7 @@ BUILTIN_TOOL_CATALOG: tuple[BuiltinToolEntry, ...] = (
     BuiltinToolEntry("ask_user_question", "interaction"),
     BuiltinToolEntry("tavily_search", "web"),
     BuiltinToolEntry("brave_search", "web"),
+    BuiltinToolEntry("deepseek_search", "web"),
     BuiltinToolEntry("google_search", "web"),
     BuiltinToolEntry("kimi_search", "web"),
     BuiltinToolEntry("searchfree_search", "web"),
@@ -78,6 +80,7 @@ BUILTIN_TOOL_CATALOG: tuple[BuiltinToolEntry, ...] = (
     BuiltinToolEntry("generate_video", "media"),
     BuiltinToolEntry("memory_search", "memory"),
     BuiltinToolEntry("memory_get", "memory"),
+    BuiltinToolEntry("memory_save", "memory"),
     BuiltinToolEntry("acp_runner", "misc"),
     # Octop host tools
     BuiltinToolEntry("cronjob_list", "cron"),
