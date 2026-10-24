@@ -1615,6 +1615,27 @@ def _ensure_runtime_run_target_schema(db: DatabasePool) -> None:
         _ensure_column(db, "agents", "default_run_target", "TEXT")
 
 
+def _ensure_knowledge_base_icon_url_schema(db: DatabasePool) -> None:
+    """Optional portrait URL on knowledge bases. Idempotent."""
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    _ensure_column(db, "knowledge_bases", "icon_url", "TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_bridge_icon_url_schema(db: DatabasePool) -> None:
+    """Optional portrait URL on bridge connections. Idempotent."""
+    if not _table_exists(db, "bridge_connections"):
+        return
+    _ensure_column(db, "bridge_connections", "icon_url", "TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_bridge_shared_schema(db: DatabasePool) -> None:
+    """Owner can share a bridge link with everyone or selected groups. Idempotent."""
+    if not _table_exists(db, "bridge_connections"):
+        return
+    _ensure_column(db, "bridge_connections", "shared", "INTEGER NOT NULL DEFAULT 0")
+
+
 def _ensure_bridge_connections_schema(db: DatabasePool) -> None:
     """Fold notes + unique display_name + auto_reconnect into unreleased v19."""
     if not _table_exists(db, "bridge_connections"):
@@ -1971,6 +1992,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         return
     if version == 24:
         _ensure_user_group_profile_schema(db)
+        _ensure_knowledge_base_icon_url_schema(db)
+        _ensure_bridge_icon_url_schema(db)
+        _ensure_bridge_shared_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -1990,6 +2014,8 @@ _PERSONALIZATION_TAB_PERMISSIONS = (
     "memory",
 )
 _PERSONALIZATION_TAB_PERMISSIONS_FLAG = "granted_personalization_tab_permissions"
+_BRIDGE_PERMISSIONS = ("bridge",)
+_BRIDGE_PERMISSIONS_FLAG = "granted_bridge_permission"
 
 
 def _parse_perm_list(raw: Any) -> list[str] | None:
@@ -2088,6 +2114,11 @@ def _grant_personalization_tab_permissions(db: DatabasePool) -> None:
     )
 
 
+def _grant_bridge_permission(db: DatabasePool) -> None:
+    """Grant cloud-collab once; /bridge used to be ungated for every signed-in user."""
+    _grant_permission_keys_once(db, _BRIDGE_PERMISSIONS, _BRIDGE_PERMISSIONS_FLAG)
+
+
 def run_migrations(db: DatabasePool) -> None:
     if db.dialect == "sqlite":
         _repair_legacy_schema(db)
@@ -2145,5 +2176,9 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_skill_package_shared_schema(db)
     _ensure_user_group_profile_schema(db)
     _ensure_runtime_run_target_schema(db)
+    _ensure_knowledge_base_icon_url_schema(db)
+    _ensure_bridge_icon_url_schema(db)
+    _ensure_bridge_shared_schema(db)
     _grant_default_nav_permissions(db)
     _grant_personalization_tab_permissions(db)
+    _grant_bridge_permission(db)
