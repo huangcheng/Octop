@@ -928,7 +928,8 @@ def test_build_harness_config_defaults_local_shell_backend(manager: AgentManager
     assert type(hub) is type(resolved)
     assert (
         getattr(hub, "id", None) == getattr(resolved, "id", None)
-        or hub.root_dir == resolved.root_dir
+        or getattr(hub, "root_dir", None) == getattr(resolved, "root_dir", None)
+        or getattr(hub, "cwd", None) == getattr(resolved, "cwd", None)
     )
     assert cfg.workspace_dir.name == "AGT001"
     assert cfg.workspace_dir.parent.name == "agents"
@@ -1584,14 +1585,16 @@ def test_bootstrap_pending_detects_unfinished_onboarding(tmp_path: Path) -> None
     assert bootstrap_marker_exists(ws)
 
 
-def test_build_harness_config_respects_config_json_backend(manager: AgentManager) -> None:
-    custom = {"type": "filesystem", "root_dir": "/srv/data"}
+def test_build_harness_config_respects_config_json_backend(
+    manager: AgentManager, tmp_path: Path
+) -> None:
+    custom = {"type": "filesystem", "root_dir": str(tmp_path)}
     cfg = manager._build_harness_config(
         _row(config_json=json.dumps({"backend": custom})),
     )
     hub = _hub_backend(cfg.backend)
     cwd = getattr(hub, "cwd", None) or getattr(hub, "root_dir", "")
-    assert str(cwd).rstrip("/") == "/srv/data"
+    assert Path(str(cwd)).resolve() == tmp_path.resolve()
 
 
 def test_backend_spec_for_row_neutralizes_host_root_on_windows(

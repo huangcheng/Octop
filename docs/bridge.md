@@ -1,7 +1,8 @@
 # Bridge（Octop ↔ Octop 实例桥）
 
 > 状态：实现中（Phase 0–3 骨架已落地）。命名与范围以本文为准；实现落在 `infra/bridge/`。  
-> 与同机 Agent 互调无关：见 [agent-call-agent.md](./agent-call-agent.md)（`ask_agent` 不参与跨实例）。
+> 与同机 Agent 互调无关：见 [agent-call-agent.md](./agent-call-agent.md)（`ask_agent` 不参与跨实例）。  
+> 被拨入侧反向调用拨入侧（云端 → 本地）的设计：见 [bridge-reverse-access.md](./bridge-reverse-access.md)。
 
 用户级连接另一台 Octop（云端或另一台本地），在本机 Dashboard 查看对端专家列表、按需拉取对话记录，并像选择本地专家一样与对端专家对话（对称：对端也可经同一桥访问本机）。对话只在**专家所在实例**执行；发起侧不落库完整历史。
 
@@ -110,6 +111,7 @@
 
 - 任一侧可 dial；握手携带 `connection_id` + 用户证明。
 - 已存在同一 `connection_id` 的活连接则合并或踢旧，避免双管道。
+- 凭证不对称（只有发起方持有对端登录态）导致当前体验单向；被拨入侧反向受限调用的凭证与协议设计见 [bridge-reverse-access.md](./bridge-reverse-access.md)。
 
 ## 5. 通用 HTTP 隧道
 
