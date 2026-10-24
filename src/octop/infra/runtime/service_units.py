@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import dataclasses
 import getpass
-import os
 import plistlib
 import shutil
 import subprocess
@@ -22,6 +21,8 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
+from octop.infra.utils import posix_compat
 
 LAUNCHD_LABEL = "com.octop.runtime"
 SYSTEMD_UNIT_NAME = "octop-runtime.service"
@@ -76,19 +77,24 @@ def _octop_bin(explicit: Path | None) -> str:
 
 
 def render_launchd_plist(octop_bin: str, runtime_home: Path) -> str:
-    """User-domain LaunchAgent plist: keep-alive, dial-out runtime daemon."""
+    """User-domain LaunchAgent plist: keep-alive, dial-out runtime daemon.
+
+    Paths are rendered POSIX-style: the plist targets macOS regardless of the
+    host that renders it, and ``str(Path)`` backslashes on Windows.
+    """
+    home = runtime_home.as_posix()
     doc = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": [octop_bin, "runtime", "run"],
         "EnvironmentVariables": {
-            "OCTOP_RUNTIME_HOME": str(runtime_home),
+            "OCTOP_RUNTIME_HOME": home,
             "OCTOP_SERVICE_MODE": "launchd",
         },
-        "WorkingDirectory": str(runtime_home),
+        "WorkingDirectory": home,
         "RunAtLoad": True,
         "KeepAlive": True,
-        "StandardOutPath": str(log_path(runtime_home)),
-        "StandardErrorPath": str(log_path(runtime_home)),
+        "StandardOutPath": f"{home}/logs/runtime.log",
+        "StandardErrorPath": f"{home}/logs/runtime.log",
     }
     return plistlib.dumps(doc).decode("utf-8")
 
@@ -114,8 +120,12 @@ def _systemd_exec_path(path: str) -> str:
 
 
 def render_systemd_user_unit(octop_bin: str, runtime_home: Path) -> str:
-    """systemd --user unit: restart on failure, user-session default target."""
-    home = _systemd_env_value(str(runtime_home))
+    """systemd --user unit: restart on failure, user-session default target.
+
+    The home is rendered POSIX-style — the unit targets Linux regardless of
+    the host that renders it.
+    """
+    home = _systemd_env_value(runtime_home.as_posix())
     binary = _systemd_exec_path(octop_bin)
     return (
         "[Unit]\n"
@@ -225,7 +235,7 @@ class RuntimeService:
     def _loaded(self, mode: str) -> bool:
         if mode == "launchd":
             proc = self._runner(
-                ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                ["launchctl", "print", f"gui/{posix_compat.getuid()}/{LAUNCHD_LABEL}"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -252,7 +262,7 @@ class RuntimeService:
         if self.mode == "launchd":
             _run(
                 self._runner,
-                ["launchctl", "kill", "SIGTERM", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                ["launchctl", "kill", "SIGTERM", f"gui/{posix_compat.getuid()}/{LAUNCHD_LABEL}"],
                 tolerate=(3,),
             )
             return
@@ -265,7 +275,7 @@ class RuntimeService:
             return UnitStatus(installed=False, running=False, detail="not installed")
         if mode == "launchd":
             proc = self._runner(
-                ["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                ["launchctl", "print", f"gui/{posix_compat.getuid()}/{LAUNCHD_LABEL}"],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -291,7 +301,7 @@ class RuntimeService:
     # -- launchd helpers ------------------------------------------------------
 
     def _launchd_target(self) -> str:
-        return f"gui/{os.getuid()}"
+        return f"gui/{posix_compat.getuid()}"
 
     def _launchd_load(self, path: Path) -> None:
         target = self._launchd_target()
@@ -314,7 +324,7 @@ class RuntimeService:
     def _launchd_unload(self) -> None:
         _run(
             self._runner,
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+            ["launchctl", "bootout", f"gui/{posix_compat.getuid()}/{LAUNCHD_LABEL}"],
             tolerate=(3, 5, 113),
         )
 

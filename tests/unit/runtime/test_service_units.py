@@ -49,8 +49,8 @@ def test_render_launchd_plist() -> None:
     assert doc["ProgramArguments"] == ["/usr/local/bin/octop", "runtime", "run"]
     assert doc["RunAtLoad"] is True
     assert doc["KeepAlive"] is True
-    assert doc["EnvironmentVariables"]["OCTOP_RUNTIME_HOME"] == str(home)
-    assert doc["StandardOutPath"] == str(home / "logs" / "runtime.log")
+    assert doc["EnvironmentVariables"]["OCTOP_RUNTIME_HOME"] == home.as_posix()
+    assert doc["StandardOutPath"] == (home / "logs" / "runtime.log").as_posix()
 
 
 def test_windows_raises_not_implemented(monkeypatch: pytest.MonkeyPatch) -> None:

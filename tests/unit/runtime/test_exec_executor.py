@@ -46,23 +46,25 @@ from octop.infra.runtime.protocol import (
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX-only semantics")
 
 PY = sys.executable
-ECHO_HI = (PY, "-c", "print('hi')")
+#: Binary stdout/stderr writes keep byte assertions exact on Windows, where
+#: text-mode writes translate "\n" to "\r\n" on pipes.
+ECHO_HI = (PY, "-c", "import sys; sys.stdout.buffer.write(b'hi\\n')")
 SLEEP_30 = (PY, "-c", "import time; time.sleep(30)")
 #: Writes 200 bytes (truncation fires), survives 0.4 s, then exits cleanly —
 #: proves the process keeps running past the output cap.
 CHATTY = (
     PY,
     "-c",
-    "import sys, time; sys.stdout.write('x' * 200); sys.stdout.flush();"
-    " time.sleep(0.4); print('END')",
+    "import sys, time; sys.stdout.buffer.write(b'x' * 200); sys.stdout.flush();"
+    " time.sleep(0.4); sys.stdout.buffer.write(b'END\\n')",
 )
 INTERLEAVED = (
     PY,
     "-c",
     "import sys\n"
     "for i in range(3):\n"
-    "    sys.stdout.write(f'out{i}\\n'); sys.stdout.flush()\n"
-    "    sys.stderr.write(f'err{i}\\n'); sys.stderr.flush()\n",
+    "    sys.stdout.buffer.write(f'out{i}\\n'.encode()); sys.stdout.flush()\n"
+    "    sys.stderr.buffer.write(f'err{i}\\n'.encode()); sys.stderr.flush()\n",
 )
 UPPERCAT = (
     PY,
@@ -494,7 +496,11 @@ async def test_credit_starvation_truncates_stream(tmp_path: Path) -> None:
     executor, sender = make_executor(
         tmp_path, initial_credit_bytes=4, credit_wait_timeout_seconds=0.2
     )
-    chatter = (PY, "-c", "print('hello world')")  # 12 bytes vs 4 granted
+    chatter = (
+        PY,
+        "-c",
+        "import sys; sys.stdout.buffer.write(b'hello world\\n')",
+    )  # 13 bytes vs 4 granted
     await open_exec(executor, payload("r1", cmd=chatter))
     exit_frame = sender.exit_frame("ex_r1")
     assert exit_frame is not None

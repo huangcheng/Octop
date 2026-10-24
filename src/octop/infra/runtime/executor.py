@@ -108,7 +108,16 @@ TMP_PREFIX = ".octop-tmp-"
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+# Windows has no O_DIRECTORY; a plain O_RDONLY open of a directory is the
+# best-effort equivalent (fd is only closed there, never used for dir_fd).
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _HAS_DIR_FD = os.open in os.supports_dir_fd and bool(_NOFOLLOW)
+#: O_NONBLOCK guards FIFO/device opens on POSIX; on Windows it turns regular
+#: file opens into EACCES (errno 13), so it is POSIX-only here.
+_NONBLOCK_POSIX = _NONBLOCK if _HAS_DIR_FD else 0
+#: Without O_BINARY, Windows _wopen defaults to text mode and translates
+#: newline characters on write/read — corrupting byte-exact transfers.
+_O_BINARY = getattr(os, "O_BINARY", 0)
 
 
 # --- Errors -------------------------------------------------------------------
@@ -147,28 +156,68 @@ def _to_fs_error(exc: BaseException) -> FsError:
 
 
 def _path_parts(path: str) -> list[str]:
-    if not path.startswith(os.sep):
+    # os.path.isabs covers POSIX leading "/" and Windows drive / UNC paths.
+    # Windows drive-relative "\foo" also passes but never matches a root in
+    # _match_root, so containment stays fail-closed there.
+    if not os.path.isabs(path):
         raise PathEscapeError("path must be absolute")
-    parts = [p for p in path.split(os.sep) if p not in ("", ".")]
+    if os.name == "nt":
+        path = path.replace("\\", "/")
+    parts = [p for p in path.split("/") if p not in ("", ".")]
     if any(p == ".." for p in parts):
         raise PathEscapeError("'..' components are not allowed")
     return parts
 
 
 def _match_root(path: str, roots: Sequence[str]) -> tuple[str, str]:
-    """Longest root containing *path* -> ``(root, relative remainder)``."""
+    """Longest root containing *path* -> ``(root, relative remainder)``.
+
+    The returned rel uses forward slashes on every platform: fs-protocol
+    paths are POSIX-form, so ``rel.split("/")`` stays correct on Windows.
+    """
     norm = os.path.normpath(path)
     for root in sorted((os.path.normpath(r) for r in roots), key=len, reverse=True):
         if norm == root:
             return root, ""
         if norm.startswith(root + os.sep):
-            return root, norm[len(root) + 1 :]
+            rel = norm[len(root) + 1 :]
+            return root, rel.replace(os.sep, "/") if os.name == "nt" else rel
     raise PathEscapeError("path is outside the roots allowlist")
 
 
+def _fwd(path: str) -> str:
+    """Outbound fs-protocol paths are forward-slash separated on every OS."""
+    return path.replace("\\", "/") if os.name == "nt" else path
+
+
+def _pread(fd: int, size: int, offset: int) -> bytes:
+    """Positional read without moving the shared fd offset.
+
+    Windows lacks ``os.pread``; seek+read is safe because every caller owns
+    its fd exclusively (no concurrent positional reads on one descriptor).
+    """
+    pread = getattr(os, "pread", None)
+    if pread is not None:
+        return bytes(pread(fd, size, offset))
+    os.lseek(fd, offset, os.SEEK_SET)
+    return bytes(os.read(fd, size))
+
+
 def _open_root_dir(root: str) -> int:
-    """Open a root directory fd. Roots are owner-configured trust anchors."""
-    return os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    """Open a root directory fd. Roots are owner-configured trust anchors.
+
+    Windows cannot open a directory at all (EACCES); callers without dir_fd
+    support get a ``-1`` sentinel and must skip close/use alike.
+    """
+    if not _HAS_DIR_FD:
+        return -1
+    return os.open(root, os.O_RDONLY | _O_DIRECTORY)
+
+
+def _close_dir_fd(fd: int) -> None:
+    """Close a containment fd, no-op for the Windows ``-1`` sentinel."""
+    if fd >= 0:
+        os.close(fd)
 
 
 def _open_dir_beneath(root_fd: int, parts: Sequence[str]) -> int:
@@ -176,7 +225,7 @@ def _open_dir_beneath(root_fd: int, parts: Sequence[str]) -> int:
     fd = os.dup(root_fd)
     try:
         for part in parts:
-            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            nxt = os.open(part, os.O_RDONLY | _O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = nxt
         return fd
@@ -247,7 +296,7 @@ def _openat2_beneath(root_fd: int, rel: str, flags: int) -> int | None:
     raise OSError(code, os.strerror(code), rel)
 
 
-def _open_final(root_fd: int, parts: Sequence[str], flags: int) -> int:
+def _open_final(root_fd: int, parts: Sequence[str], flags: int, root: str = "") -> int:
     """Open the final component of *parts* relative to *root_fd*."""
     rel = "/".join(parts)
     if _HAS_DIR_FD:
@@ -262,8 +311,9 @@ def _open_final(root_fd: int, parts: Sequence[str], flags: int) -> int:
                 raise _map_loop(exc) from exc
         finally:
             os.close(parent)
-    # Windows best-effort: textual containment already proven by _match_root.
-    return os.open(rel, flags)
+    # Windows best-effort: textual containment already proven by _match_root;
+    # *root* anchors the join so the open never depends on the process CWD.
+    return os.open(os.path.join(root, *parts), flags)
 
 
 def open_regular_file(path: str, roots: Sequence[str], flags: int) -> tuple[int, os.stat_result]:
@@ -282,11 +332,13 @@ def open_regular_file(path: str, roots: Sequence[str], flags: int) -> tuple[int,
     root_fd = _open_root_dir(root)
     try:
         try:
-            fd = _open_final(root_fd, rel.split("/"), flags | _NOFOLLOW | _NONBLOCK)
+            fd = _open_final(
+                root_fd, rel.split("/"), flags | _NOFOLLOW | _NONBLOCK_POSIX | _O_BINARY, root=root
+            )
         except OSError as exc:
             raise _map_loop(exc) from exc
     finally:
-        os.close(root_fd)
+        _close_dir_fd(root_fd)
     try:
         st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode):
@@ -315,15 +367,15 @@ def resolve_parent(path: str, roots: Sequence[str]) -> tuple[str, int, str]:
     try:
         if _HAS_DIR_FD:
             return root, _open_dir_beneath(root_fd, rel_parts[:-1]), rel_parts[-1]
-        # Windows best-effort: parent opened by full path.
-        parent = os.path.join(root, *(rel_parts[:-1]))
-        return root, os.open(parent or root, os.O_RDONLY | os.O_DIRECTORY), rel_parts[-1]
+        # Windows best-effort: no directory fds exist; callers operate on
+        # full contained paths (textual containment already proven).
+        return root, -1, rel_parts[-1]
     except OSError as exc:
         # finally closes root_fd exactly once — closing here too would
         # raise EBADF and mask the real error (e.g. ENOENT).
         raise _map_loop(exc) from exc
     finally:
-        os.close(root_fd)
+        _close_dir_fd(root_fd)
 
 
 def weak_etag(st: os.stat_result) -> str:
@@ -331,9 +383,15 @@ def weak_etag(st: os.stat_result) -> str:
     return f"{st.st_mtime_ns}:{st.st_size}:{st.st_ino}"
 
 
-def lstat_final(parent_fd: int, name: str) -> os.stat_result | None:
+def lstat_final(parent_fd: int, name: str, full_path: str | None = None) -> os.stat_result | None:
     try:
-        return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if _HAS_DIR_FD:
+            return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        # Windows best-effort: no dir_fd syscalls; *full_path* must carry the
+        # containment-proven absolute path (textual containment via _match_root).
+        if full_path is None:
+            raise FsError(ErrorKind.INTERNAL, "full path required without dir_fd support")
+        return os.stat(full_path, follow_symlinks=False)
     except FileNotFoundError:
         return None
 
@@ -343,7 +401,7 @@ def rmtree_fd(fd: int) -> None:
     for name in os.listdir(fd):
         st = os.stat(name, dir_fd=fd, follow_symlinks=False)
         if stat_module.S_ISDIR(st.st_mode):
-            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
             try:
                 rmtree_fd(child)
             finally:
@@ -351,6 +409,22 @@ def rmtree_fd(fd: int) -> None:
             os.rmdir(name, dir_fd=fd)
         else:
             os.unlink(name, dir_fd=fd)
+
+
+def rmtree_path(path: str) -> None:
+    """Windows best-effort twin of :func:`rmtree_fd` on full paths.
+
+    Containment was proven textually by ``_match_root`` before the call;
+    symlinks are unlinked, never descended (same semantics as the fd walk).
+    """
+    for name in os.listdir(path):
+        child = os.path.join(path, name)
+        st = os.stat(child, follow_symlinks=False)
+        if stat_module.S_ISDIR(st.st_mode):
+            rmtree_path(child)
+            os.rmdir(child)
+        else:
+            os.unlink(child)
 
 
 def iter_tree_fd(fd: int, rel: str, scanned: list[int], scan_cap: int) -> Any:
@@ -367,11 +441,29 @@ def iter_tree_fd(fd: int, rel: str, scanned: list[int], scan_cap: int) -> Any:
         child_rel = f"{rel}/{name}" if rel else name
         yield child_rel, st
         if stat_module.S_ISDIR(st.st_mode):
-            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
             try:
                 yield from iter_tree_fd(child, child_rel, scanned, scan_cap)
             finally:
                 os.close(child)
+
+
+def iter_tree_path(path: str, rel: str, scanned: list[int], scan_cap: int) -> Any:
+    """Windows best-effort twin of :func:`iter_tree_fd` on full paths.
+
+    Same ordering (sorted), same symlink semantics (yielded, never
+    descended), same POSIX-style forward-slash ``rel`` fragments.
+    """
+    for name in sorted(os.listdir(path)):
+        scanned[0] += 1
+        if scanned[0] > scan_cap:
+            return
+        child_path = os.path.join(path, name)
+        st = os.stat(child_path, follow_symlinks=False)
+        child_rel = f"{rel}/{name}" if rel else name
+        yield child_rel, st
+        if stat_module.S_ISDIR(st.st_mode):
+            yield from iter_tree_path(child_path, child_rel, scanned, scan_cap)
 
 
 def glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -848,7 +940,7 @@ class FsExecutor:
     async def _pread_full(self, fd: int, want: int, offset: int) -> bytes:
         buf = bytearray()
         while len(buf) < want:
-            got = await asyncio.to_thread(os.pread, fd, want - len(buf), offset + len(buf))
+            got = await asyncio.to_thread(_pread, fd, want - len(buf), offset + len(buf))
             if not got:
                 break
             buf += got
@@ -880,7 +972,7 @@ class FsExecutor:
     def _open_write_target(self, stream: _WriteStream) -> None:
         roots = self._load_roots()
         stream.root, stream.parent_fd, stream.final_name = resolve_parent(stream.path, roots)
-        existing = lstat_final(stream.parent_fd, stream.final_name)
+        existing = lstat_final(stream.parent_fd, stream.final_name, full_path=stream.path)
         if existing is not None and stat_module.S_ISLNK(existing.st_mode):
             raise PathEscapeError("refusing to write through a symlink")
         if existing is not None and not stat_module.S_ISREG(existing.st_mode):
@@ -888,13 +980,18 @@ class FsExecutor:
         if stream.append:
             return  # opened per batch with O_APPEND|O_CREAT
         stream.tmp_name = f"{TMP_PREFIX}{new_ulid().lower()}"
-        stream.tmp_fd = os.open(
-            stream.tmp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
-            0o644,
-            dir_fd=stream.parent_fd,
-        )
         stream.tmp_abs = os.path.join(os.path.dirname(stream.path), stream.tmp_name)
+        create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _O_BINARY
+        if _HAS_DIR_FD:
+            stream.tmp_fd = os.open(
+                stream.tmp_name,
+                create_flags,
+                0o644,
+                dir_fd=stream.parent_fd,
+            )
+        else:
+            # Windows best-effort: textual containment already proven.
+            stream.tmp_fd = os.open(stream.tmp_abs, create_flags, 0o644)
         self._live_temps.add(stream.tmp_abs)
 
     async def _write_chunk(self, stream: _WriteStream, payload: FsWrite) -> None:
@@ -935,13 +1032,19 @@ class FsExecutor:
                 assert tmp_fd is not None  # set by _open_write_target
                 os.write(tmp_fd, data)
                 return
+            append_flags = (
+                os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK_POSIX | _O_BINARY
+            )
             try:
-                fd = os.open(
-                    stream.final_name,
-                    os.O_WRONLY | os.O_APPEND | os.O_CREAT | _NOFOLLOW | _NONBLOCK,
-                    0o644,
-                    dir_fd=stream.parent_fd,
-                )
+                if _HAS_DIR_FD:
+                    fd = os.open(
+                        stream.final_name,
+                        append_flags,
+                        0o644,
+                        dir_fd=stream.parent_fd,
+                    )
+                else:
+                    fd = os.open(stream.path, append_flags, 0o644)
             except OSError as exc:
                 raise _map_loop(exc) from exc
             try:
@@ -966,7 +1069,7 @@ class FsExecutor:
         if stream.append:
             parent_fd = stream.parent_fd
             assert parent_fd is not None  # set by _open_write_target
-            st = await asyncio.to_thread(lstat_final, parent_fd, stream.final_name)
+            st = await asyncio.to_thread(lstat_final, parent_fd, stream.final_name, stream.path)
             etag = weak_etag(st) if st is not None else None
         else:
 
@@ -977,13 +1080,23 @@ class FsExecutor:
                 assert tmp_fd is not None and tmp_name is not None  # _open_write_target
                 assert parent_fd is not None
                 os.fsync(tmp_fd)
-                os.rename(
-                    tmp_name,
-                    stream.final_name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
-                )
-                return weak_etag(os.stat(stream.final_name, dir_fd=parent_fd))
+                if _HAS_DIR_FD:
+                    os.rename(
+                        tmp_name,
+                        stream.final_name,
+                        src_dir_fd=parent_fd,
+                        dst_dir_fd=parent_fd,
+                    )
+                    return weak_etag(os.stat(stream.final_name, dir_fd=parent_fd))
+                # Windows: renaming a file with an open handle fails with a
+                # sharing violation — close first and null the fd so teardown
+                # does not double-close.
+                os.close(tmp_fd)
+                stream.tmp_fd = None
+                tmp_abs = stream.tmp_abs
+                assert tmp_abs is not None  # set by _open_write_target
+                os.replace(tmp_abs, stream.path)
+                return weak_etag(os.stat(stream.path))
 
             async with self._lock_paths((os.path.normpath(stream.path),)):
                 etag = await asyncio.to_thread(commit)
@@ -1012,9 +1125,12 @@ class FsExecutor:
                 os.close(stream.tmp_fd)
             if stream.tmp_name is not None and stream.parent_fd is not None:
                 with contextlib.suppress(OSError):
-                    os.unlink(stream.tmp_name, dir_fd=stream.parent_fd)
+                    if _HAS_DIR_FD:
+                        os.unlink(stream.tmp_name, dir_fd=stream.parent_fd)
+                    elif stream.tmp_abs is not None:
+                        os.unlink(stream.tmp_abs)
             if stream.parent_fd is not None:
-                os.close(stream.parent_fd)
+                _close_dir_fd(stream.parent_fd)
 
         try:
             await asyncio.to_thread(cleanup)
@@ -1030,6 +1146,11 @@ class FsExecutor:
         root, rel = _match_root(norm, roots)
         if not rel:  # the root itself
             st = os.stat(root)
+        elif not _HAS_DIR_FD:
+            # Windows best-effort: textual containment already proven.
+            st = os.stat(norm, follow_symlinks=False)
+            if stat_module.S_ISLNK(st.st_mode):
+                raise PathEscapeError("stat through a symlink rejected")
         else:
             rel_parts = rel.split("/")
             root_fd = _open_root_dir(root)
@@ -1054,6 +1175,20 @@ class FsExecutor:
         roots = self._load_roots()
         norm = os.path.normpath(path)
         root, rel = _match_root(norm, roots)
+        if not _HAS_DIR_FD:
+            names = sorted(os.listdir(norm))
+            truncated = len(names) > self._list_cap
+            entries = []
+            for name in names[: self._list_cap]:
+                st = os.stat(os.path.join(norm, name), follow_symlinks=False)
+                entries.append(
+                    {
+                        "path": _fwd(os.path.join(norm, name)),
+                        "is_dir": stat_module.S_ISDIR(st.st_mode),
+                        "size": st.st_size,
+                    }
+                )
+            return {"entries": entries, "truncated": truncated}
         root_fd = _open_root_dir(root)
         try:
             fd = _open_dir_beneath(root_fd, rel.split("/") if rel else [])
@@ -1069,7 +1204,7 @@ class FsExecutor:
                 st = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 entries.append(
                     {
-                        "path": os.path.join(norm, name),
+                        "path": _fwd(os.path.join(norm, name)),
                         "is_dir": stat_module.S_ISDIR(st.st_mode),
                         "size": st.st_size,
                     }
@@ -1099,22 +1234,42 @@ class FsExecutor:
                     except FileExistsError:
                         if not recursive:
                             raise
-                    nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
+                    nxt = os.open(part, os.O_RDONLY | _O_DIRECTORY | _NOFOLLOW, dir_fd=fd)
                     os.close(fd)
                     fd = nxt
             finally:
                 os.close(fd)
         finally:
-            os.close(root_fd)
+            _close_dir_fd(root_fd)
 
     def _sync_delete(self, path: str, recursive: bool) -> None:
         root, parent_fd, name = resolve_parent(path, self._load_roots())
         try:
+            if not _HAS_DIR_FD:
+                # Windows best-effort: textual containment already proven.
+                try:
+                    win_st = os.stat(path, follow_symlinks=False)
+                except FileNotFoundError:
+                    return  # match POSIX semantics: delete-missing is a noop
+                if stat_module.S_ISDIR(win_st.st_mode):
+                    if not recursive:
+                        if os.listdir(path):
+                            raise FsError(
+                                ErrorKind.INTERNAL,
+                                "directory not empty",
+                            )
+                        os.rmdir(path)
+                        return
+                    rmtree_path(path)
+                    os.rmdir(path)
+                else:
+                    os.unlink(path)
+                return
             st = lstat_final(parent_fd, name)
             if st is None:
                 return
             if stat_module.S_ISDIR(st.st_mode):
-                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
+                child = os.open(name, os.O_RDONLY | _O_DIRECTORY | _NOFOLLOW, dir_fd=parent_fd)
                 try:
                     if not recursive:
                         entries = os.listdir(child)
@@ -1132,7 +1287,7 @@ class FsExecutor:
             else:
                 os.unlink(name, dir_fd=parent_fd)
         finally:
-            os.close(parent_fd)
+            _close_dir_fd(parent_fd)
 
     def _sync_rename(self, payload: FsRename) -> None:
         roots = self._load_roots()
@@ -1140,12 +1295,12 @@ class FsExecutor:
         try:
             new_root, new_fd, new_name = resolve_parent(payload.new, roots)
         except BaseException:
-            os.close(old_fd)
+            _close_dir_fd(old_fd)
             raise
         try:
             if old_root != new_root:
                 raise PathEscapeError("cross-root rename rejected")
-            old_st = lstat_final(old_fd, old_name)
+            old_st = lstat_final(old_fd, old_name, full_path=payload.old)
             if old_st is None:
                 raise FileNotFoundError(errno.ENOENT, "no such file or directory", payload.old)
             if stat_module.S_ISDIR(old_st.st_mode):
@@ -1153,17 +1308,20 @@ class FsExecutor:
             if not stat_module.S_ISREG(old_st.st_mode):
                 raise FsError(ErrorKind.INTERNAL, "only regular files can be renamed")
             try:
-                os.rename(
-                    old_name,
-                    new_name,
-                    src_dir_fd=old_fd,
-                    dst_dir_fd=new_fd,
-                )
+                if _HAS_DIR_FD:
+                    os.rename(
+                        old_name,
+                        new_name,
+                        src_dir_fd=old_fd,
+                        dst_dir_fd=new_fd,
+                    )
+                else:
+                    os.replace(payload.old, payload.new)
             except OSError as exc:
                 raise _map_loop(exc) from exc
         finally:
-            os.close(old_fd)
-            os.close(new_fd)
+            _close_dir_fd(old_fd)
+            _close_dir_fd(new_fd)
 
     def _sync_edit(self, payload: FsEdit) -> dict[str, Any]:
         # Read-only: mutation happens via temp+rename; O_RDWR would fail on
@@ -1177,7 +1335,7 @@ class FsExecutor:
             size = st.st_size
             content = b""
             while len(content) < size:
-                got = os.pread(fd, size - len(content), len(content))
+                got = _pread(fd, size - len(content), len(content))
                 if not got:
                     break
                 content += got
@@ -1200,44 +1358,72 @@ class FsExecutor:
             else:
                 replacements = 0
                 new_text = text
+            if not _HAS_DIR_FD:
+                # Windows: the commit below replaces the target while this
+                # read handle is still open — no FILE_SHARE_DELETE, close now.
+                os.close(fd)
+                fd = -1
             # RMW through a temp in the same directory, then renameat —
             # atomic under the already-held path lock.
             root, parent_fd, name = resolve_parent(payload.path, self._load_roots())
             try:
                 tmp = f"{TMP_PREFIX}{new_ulid().lower()}"
-                tmp_fd = os.open(
-                    tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o644, dir_fd=parent_fd
-                )
+                create_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _O_BINARY
+                tmp_abs = os.path.join(os.path.dirname(payload.path), tmp)
+                if _HAS_DIR_FD:
+                    tmp_fd = os.open(tmp, create_flags, 0o644, dir_fd=parent_fd)
+                else:
+                    tmp_fd = os.open(tmp_abs, create_flags, 0o644)
                 try:
                     os.write(tmp_fd, new_text.encode())
                     os.fsync(tmp_fd)
-                    os.rename(tmp, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-                    new_st = os.stat(name, dir_fd=parent_fd)
+                    if _HAS_DIR_FD:
+                        os.rename(tmp, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                        new_st = os.stat(name, dir_fd=parent_fd)
+                    else:
+                        # Windows: close before replace (no rename of open handles).
+                        os.close(tmp_fd)
+                        tmp_fd = -1
+                        os.replace(tmp_abs, payload.path)
+                        new_st = os.stat(payload.path)
                 finally:
-                    os.close(tmp_fd)
+                    if tmp_fd >= 0:
+                        os.close(tmp_fd)
                     with contextlib.suppress(OSError):
-                        os.unlink(tmp, dir_fd=parent_fd)
+                        if _HAS_DIR_FD:
+                            os.unlink(tmp, dir_fd=parent_fd)
+                        else:
+                            os.unlink(tmp_abs)
             finally:
-                os.close(parent_fd)
+                _close_dir_fd(parent_fd)
             return {"occurrences": replacements, "etag": weak_etag(new_st)}
         finally:
-            os.close(fd)
+            if fd >= 0:
+                os.close(fd)
 
-    def _walk_base(self, base: str) -> tuple[str, str, int]:
-        """Resolve a glob/grep base to ``(root, rel, dir_fd)``."""
+    def _walk_base(self, base: str) -> tuple[str, str, int, str]:
+        """Resolve a glob/grep base to ``(root, rel, dir_fd, dir_path)``.
+
+        ``dir_path`` is the containment-proven absolute path used by the
+        Windows (no dir_fd) tree walkers; POSIX ignores it.
+        """
         roots = self._load_roots()
         if base:
             norm = os.path.normpath(base)
             root, rel = _match_root(norm, roots)
+            if not _HAS_DIR_FD:
+                return root, rel, -1, norm
             root_fd = _open_root_dir(root)
             try:
-                return root, rel, _open_dir_beneath(root_fd, rel.split("/") if rel else [])
+                return root, rel, _open_dir_beneath(root_fd, rel.split("/") if rel else []), norm
             except BaseException:
                 os.close(root_fd)
                 raise
         # No base: walk every root (single synthetic walk when one root).
         first = os.path.normpath(roots[0])
-        return first, "", _open_root_dir(first)
+        if not _HAS_DIR_FD:
+            return first, "", -1, first
+        return first, "", _open_root_dir(first), first
 
     def _sync_glob(self, pattern: str, base: str) -> dict[str, Any]:
         regex = glob_to_regex(pattern)
@@ -1248,19 +1434,27 @@ class FsExecutor:
         bases = [base] if base else list(roots)
         truncated = False
         for one_base in bases:
-            root, rel_base, fd = self._walk_base(one_base)
+            root, rel_base, fd, dir_path = self._walk_base(one_base)
+            walker = (
+                iter_tree_fd(fd, rel_base, scanned, self._scan_cap)
+                if _HAS_DIR_FD
+                else iter_tree_path(dir_path, rel_base, scanned, self._scan_cap)
+            )
             try:
-                for rel, st in iter_tree_fd(fd, rel_base, scanned, self._scan_cap):
+                for rel, st in walker:
                     if stat_module.S_ISLNK(st.st_mode):
                         continue  # symlink-escape skipped
-                    candidate = os.path.join(root, rel)
+                    # POSIX-style separators keep glob patterns portable on Windows.
+                    root_prefix = root.rstrip("/\\")
+                    candidate = f"{_fwd(root_prefix)}/{rel}" if rel else _fwd(root)
                     if regex.match(candidate if absolute else rel):
                         matches.append(candidate)
                         if len(matches) >= self._list_cap:
                             truncated = True
                             break
             finally:
-                os.close(fd)
+                if _HAS_DIR_FD:
+                    os.close(fd)
             if truncated:
                 break
         if scanned[0] > self._scan_cap:
@@ -1278,20 +1472,26 @@ class FsExecutor:
         roots = self._load_roots()
         bases = [base] if base else list(roots)
         for one_base in bases:
-            root, rel_base, fd = self._walk_base(one_base)
+            root, rel_base, fd, dir_path = self._walk_base(one_base)
+            walker = (
+                iter_tree_fd(fd, rel_base, scanned, self._scan_cap)
+                if _HAS_DIR_FD
+                else iter_tree_path(dir_path, rel_base, scanned, self._scan_cap)
+            )
             try:
-                for rel, st in iter_tree_fd(fd, rel_base, scanned, self._scan_cap):
+                for rel, st in walker:
                     if truncated:
                         break
                     if stat_module.S_ISLNK(st.st_mode) or not stat_module.S_ISREG(st.st_mode):
                         continue
                     if st.st_size > GREP_FILE_MAX_BYTES:
                         continue
-                    found = self._grep_file(os.path.join(root, rel), regex)
+                    full = os.path.join(root, rel)
+                    found = self._grep_file(full, regex)
                     for line_no, text in found:
                         matches.append(
                             {
-                                "path": os.path.join(root, rel),
+                                "path": _fwd(full),
                                 "line": line_no,
                                 "text": text[:GREP_TEXT_MAX_BYTES],
                             }
@@ -1302,7 +1502,8 @@ class FsExecutor:
                 if truncated:
                     break
             finally:
-                os.close(fd)
+                if _HAS_DIR_FD:
+                    os.close(fd)
         if scanned[0] > self._scan_cap:
             truncated = True
         return {"matches": matches, "truncated": truncated}
@@ -1310,13 +1511,13 @@ class FsExecutor:
     def _grep_file(self, path: str, regex: re.Pattern[str]) -> list[tuple[int, str]]:
         fd, _ = open_regular_file(path, self._load_roots(), os.O_RDONLY)
         try:
-            head = os.pread(fd, BINARY_SNIFF_BYTES, 0)
+            head = _pread(fd, BINARY_SNIFF_BYTES, 0)
             if b"\x00" in head:
                 return []  # binary files skipped
             chunks = [head]
             pos = len(head)
             while True:
-                got = os.pread(fd, CHUNK_BYTES, pos)
+                got = _pread(fd, CHUNK_BYTES, pos)
                 if not got:
                     break
                 chunks.append(got)
