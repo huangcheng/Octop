@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import socket
 import threading
 from collections.abc import Callable
@@ -141,6 +142,8 @@ async def test_remote_runtime_end_to_end(tmp_octop_home: Path, _no_proxy: None) 
                         allow_exec=True,
                         workspace_base=str(roots),
                         agent_root="shared",
+                        # The default /bin/sh argv only exists on POSIX daemons.
+                        shell_argv=("cmd", "/c") if os.name == "nt" else ("/bin/sh", "-c"),
                     )
 
                     write = await asyncio.wait_for(

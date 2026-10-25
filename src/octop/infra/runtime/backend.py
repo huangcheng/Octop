@@ -269,6 +269,7 @@ class RuntimeBackendHub:
         workspace_base: str,
         agent_root: str = "auto",
         agent_id: str | None = None,
+        shell_argv: Sequence[str] | None = None,
     ) -> RemoteRuntimeBackend:
         """Cached stable proxy for *enrollment_id* at the resolved content root."""
         eid = str(enrollment_id)
@@ -289,14 +290,18 @@ class RuntimeBackendHub:
                         ErrorCode.RUNTIME_UNSUPPORTED,
                         f"runtime enrollment {eid!r} is {row.status}",
                     )
-            backend = RemoteRuntimeBackend(
-                eid,
-                session_provider=partial(self.link_for, eid),
-                allow_exec=allow_exec,
-                workspace_base=workspace_base,
-                agent_root=agent_root,
-                agent_id=agent_id,
-            )
+            backend_kwargs: dict[str, Any] = {
+                "session_provider": partial(self.link_for, eid),
+                "allow_exec": allow_exec,
+                "workspace_base": workspace_base,
+                "agent_root": agent_root,
+                "agent_id": agent_id,
+            }
+            if shell_argv is not None:
+                # The argv runs on the DAEMON, so cross-OS callers (e.g. a
+                # Windows hub proxying a POSIX daemon) pin it explicitly.
+                backend_kwargs["shell_argv"] = tuple(shell_argv)
+            backend = RemoteRuntimeBackend(eid, **backend_kwargs)
             if len(self._backends) >= self.MAX_CACHED_BACKENDS:
                 oldest = next(iter(self._backends))
                 del self._backends[oldest]
@@ -736,7 +741,7 @@ class RemoteRuntimeBackend(SandboxBackendProtocol):
     def _to_virtual(self, remote_path: str) -> str:
         """Map a runtime-host path from a reply back to a virtual path."""
         text = str(remote_path).replace("\\", "/")
-        root = self._content_root
+        root = str(self._content_root).replace("\\", "/")
         if root and (text == root or text.startswith(root.rstrip("/") + "/")):
             text = text[len(root.rstrip("/")) :]
         return "/" + text.lstrip("/")

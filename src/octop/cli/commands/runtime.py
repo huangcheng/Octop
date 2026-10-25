@@ -282,8 +282,24 @@ def service_stop() -> None:
 @service.command("status")
 def service_status() -> None:
     locale = _locale()
-    svc = _service_op(locale)
-    status = svc.status()
+    from octop.infra.runtime.service_units import RuntimeService
+
+    try:
+        svc = RuntimeService()
+        status = svc.status()
+    except NotImplementedError as exc:
+        # Status stays informational on unsupported platforms (the mode/path
+        # properties raise there); install / start / stop still fail loudly.
+        click.echo(
+            tr(
+                "runtime.service_status",
+                locale,
+                unit=str(exc),
+                installed="false",
+                running="?",
+            )
+        )
+        return
     running = "?" if status.running is None else str(status.running).lower()
     click.echo(
         tr(

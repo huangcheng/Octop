@@ -21,6 +21,9 @@ def _isolate_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "runtime-home"
     monkeypatch.setenv(ENV_RUNTIME_HOME, str(home))
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Path.home() prefers USERPROFILE on Windows; pin it so enroll's default
+    # root resolves to the isolated home on every platform.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "octop"))
     return home
 
