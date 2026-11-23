@@ -303,6 +303,7 @@ class Gateway:
             hub=self._ws_hub,
             steer=self._steer,
             channel_id=WS_CHANNEL_ID,
+            on_turn_complete=self._notify_turn_complete,
         )
         await self._channel_manager.add_channel(self._ws_channel)
 
@@ -577,6 +578,20 @@ class Gateway:
             metadata=metadata,
         )
 
+    def _dashboard_push_frame(
+        self, agent_id: str, thread_id: str | None, text: str
+    ) -> dict[str, Any]:
+        row = self._agent_manager.get_row(agent_id)
+        name = getattr(row, "name", None) if row is not None else None
+        agent_name = str(name).strip() if isinstance(name, str) and name.strip() else agent_id
+        return {
+            "type": "dashboard_push",
+            "agent_id": agent_id,
+            "thread_id": thread_id,
+            "text": text,
+            "agent_name": agent_name,
+        }
+
     async def notify_dashboard_push(
         self,
         session: SessionRow,
@@ -586,18 +601,28 @@ class Gateway:
         """Fan out a toast payload to the owner's dashboard notification sockets."""
         if not text.strip():
             return
-        row = self._agent_manager.get_row(agent_id)
-        name = getattr(row, "name", None) if row is not None else None
-        agent_name = str(name).strip() if isinstance(name, str) and name.strip() else agent_id
         await self._ws_hub.push_to_user(
             session.user_id,
-            {
-                "type": "dashboard_push",
-                "agent_id": agent_id,
-                "thread_id": session.thread_id,
-                "text": text,
-                "agent_name": agent_name,
-            },
+            self._dashboard_push_frame(agent_id, session.thread_id, text),
+        )
+
+    async def _notify_turn_complete(
+        self,
+        user_id: int,
+        agent_id: str,
+        thread_id: str,
+        preview: str,
+    ) -> None:
+        """A reply finished with nobody subscribed to the thread — push a preview.
+
+        Same frame as cron/proactive pushes, so every dashboard and the mobile
+        client already know how to present it and deep-link on tap.
+        """
+        if not preview.strip():
+            return
+        await self._ws_hub.push_to_user(
+            user_id,
+            self._dashboard_push_frame(agent_id, thread_id, preview),
         )
 
     def _require_channel_manager(self) -> ChannelManager:

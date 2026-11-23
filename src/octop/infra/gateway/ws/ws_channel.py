@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from octop_gateway.channel import BaseChannel, MessageProcessor
@@ -39,6 +41,36 @@ logger = logging.getLogger(__name__)
 WS_CHANNEL_ID = "octop-dashboard"
 
 
+TurnCompleteNotifier = Callable[[int, str, str, str], Awaitable[None]]
+"""``(user_id, agent_id, thread_id, reply preview)`` — invoked when a turn ends
+while no connection is subscribed to the thread, so the owner can still learn
+the answer is ready (the dashboard/mobile push channel)."""
+
+# A push body is a glance, not the answer: fenced code and tables are dropped,
+# inline markup stripped, whitespace collapsed, then capped.
+_REPLY_PREVIEW_MAX = 160
+_FENCE_RE = re.compile(r"```.*?```", re.S)
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_LEAD_RE = re.compile(r"^[ \t]*(?:[#>*+-]+|\d+[.)])[ \t]*", re.M)
+_EMPHASIS_RE = re.compile(r"[*_~`]+")
+# Table separator rows: pipes, dashes and colons only.
+_TABLE_RULE_RE = re.compile(r"^[ \t]*\|?[ \t:|-]*-[ \t:|-]*\|?[ \t]*$", re.M)
+
+
+def _reply_preview(text: str) -> str:
+    plain = _FENCE_RE.sub(" ", text)
+    plain = _IMAGE_RE.sub(" ", plain)
+    plain = _LINK_RE.sub(r"\1", plain)
+    plain = _TABLE_RULE_RE.sub(" ", plain)
+    plain = _LEAD_RE.sub("", plain)
+    plain = _EMPHASIS_RE.sub("", plain)
+    plain = " ".join(plain.replace("|", " ").split())
+    if len(plain) > _REPLY_PREVIEW_MAX:
+        return plain[: _REPLY_PREVIEW_MAX - 1].rstrip() + "…"
+    return plain
+
+
 class WebSocketChannel(BaseChannel):
     """Routes chat turns through GlobalProcessor.iter_turn_chunks → WebSocket hub."""
 
@@ -51,10 +83,12 @@ class WebSocketChannel(BaseChannel):
         hub: WebSocketHub,
         steer: SteerCoordinator | None = None,
         channel_id: str = WS_CHANNEL_ID,
+        on_turn_complete: TurnCompleteNotifier | None = None,
     ) -> None:
         super().__init__(processor, channel_id=channel_id, debounce_seconds=0.0)
         self._hub = hub
         self._steer = steer or SteerCoordinator()
+        self._on_turn_complete = on_turn_complete
 
     def _default_constraints(self) -> ChannelConstraints:
         return ChannelConstraints(
@@ -172,6 +206,10 @@ class WebSocketChannel(BaseChannel):
         self._hub.mark_turn_active(thread_id)
         failed = False
         stream = None
+        # Tail of the final assistant message, for a push when nobody is
+        # listening. Reset at tool boundaries so the preview is the answer,
+        # not the text that preceded the tool calls.
+        reply_parts: list[str] = []
         try:
             await self._hub.push_to_thread(
                 thread_id,
@@ -235,6 +273,15 @@ class WebSocketChannel(BaseChannel):
                     if chunk_type == "error":
                         failed = True
                         break
+                    if isinstance(chunk, dict):
+                        if chunk_type == "token" and not preempted:
+                            content = chunk.get("content")
+                            if isinstance(content, str) and content:
+                                reply_parts.append(content)
+                                if sum(len(part) for part in reply_parts) > 4096:
+                                    reply_parts = ["".join(reply_parts)[-4096:]]
+                        elif chunk_type in ("tool_call", "tool_call_chunk", "tool_result"):
+                            reply_parts.clear()
                     if chunk_type == "hitl_required":
                         # Graph is interrupted; the WS turn ends but resume flows
                         # through the HITL SSE route — never continue into it.
@@ -303,6 +350,25 @@ class WebSocketChannel(BaseChannel):
                     text=outcome.text,
                     blocks=outcome.content_blocks,
                 )
+            if (
+                not failed
+                and not self._steer.is_hitl_paused(thread_id)
+                and starter > 0
+                and self._on_turn_complete is not None
+                and not self._hub.has_subscribers(thread_id)
+            ):
+                # The answer finished with nobody subscribed (user left the
+                # thread or the socket dropped): offer it as a push. Must
+                # never affect the turn itself.
+                try:
+                    await self._on_turn_complete(
+                        starter,
+                        str(message.tenant_id or ""),
+                        thread_id,
+                        _reply_preview("".join(reply_parts)),
+                    )
+                except Exception:
+                    logger.exception("websocket turn-complete notify failed thread=%s", thread_id)
         except Exception as exc:
             failed = True
             logger.exception("websocket turn failed")
