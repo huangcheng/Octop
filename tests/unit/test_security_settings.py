@@ -18,6 +18,10 @@ def test_load_defaults_when_missing() -> None:
     assert policy.tool_guard.enabled is True
     assert policy.tool_guard.mode == "warn"
     assert policy.resolve_interrupt_on() is None
+    # Phone-operating experts need the numbers users type; only the mobile
+    # pattern is opted out (absent on harness builds without the flag).
+    assert policy.to_dict()["pii"].get("mask_phones", False) is False
+    assert policy.to_dict()["pii"]["enabled"] is True
 
 
 def test_save_round_trip() -> None:

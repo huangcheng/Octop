@@ -20,6 +20,11 @@ def _default_policy() -> SecurityPolicy:
     data = SecurityPolicy.defaults().to_dict()
     data["hitl"]["enabled"] = False
     data["tool_guard"] = {"enabled": True, "mode": "warn"}
+    # Experts operate the user's phone: a number the user types or receives
+    # must reach the model intact or calls/SMS to it are impossible. Only the
+    # mainland-mobile pattern is opted out; API keys and resident IDs stay
+    # masked on every surface. Older harness builds ignore the unknown key.
+    data["pii"] = {**data.get("pii", {}), "mask_phones": False}
     return SecurityPolicy.from_dict(data)
 
 

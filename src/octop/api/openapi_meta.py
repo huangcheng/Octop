@@ -50,9 +50,13 @@ Dashboard live turns use **WebSocket** at `/api/agents/{agent_id}/chat/ws` (pass
 chunks matching the harness stream format, ending with `{"type":"done"}` or
 `{"type":"error","message":"..."}`.
 
-Text-type dashboard pushes (cron reminders, proactive care) also emit
+Text-type dashboard pushes (cron reminders, proactive care, reply previews
+for threads nobody is subscribed to) also emit
 `{"type":"dashboard_push", ...}` on `/api/notifications/ws` (same `?token=` auth) so the
-SPA can show a toast even when the chat socket is not subscribed.
+SPA can show a toast even when the chat socket is not subscribed. That socket is the
+session socket: mobile clients multiplex device presence on it
+(`device_tools.register` / `device_tool_result` in, `device_tool_call` out), so the app
+keeps a single background connection.
 
 HITL resume still uses `POST /api/agents/{agent_id}/chat/hitl/resume` (SSE).
 """

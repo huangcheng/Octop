@@ -1,10 +1,12 @@
 """In-process registry of the user's connected phones (device presence).
 
-A phone holds one authenticated WebSocket (``/api/devices/ws``) and advertises
-the device tools its user consented to. Experts reach those tools through the
-loopback device MCP; this hub routes one call to the phone that advertises the
-tool and awaits the ``device_tool_result`` frame. Writes/actions may park on
-the phone's inline approval card, so the wait budget is minutes, not seconds.
+A phone advertises the device tools its user consented to over the session
+socket (``/api/notifications/ws`` — the same connection that receives pushes,
+so the app keeps one background socket). Experts reach those tools through the
+loopback device MCP or the in-process bridge; this hub routes one call to the
+phone that advertises the tool and awaits the ``device_tool_result`` frame.
+Writes/actions may park on the phone's inline approval card, so the wait
+budget is minutes, not seconds.
 """
 
 from __future__ import annotations
@@ -21,6 +23,31 @@ logger = logging.getLogger(__name__)
 SendFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 CALL_TIMEOUT_SECONDS = 300.0
+
+
+def valid_tools(raw: Any) -> list[dict[str, Any]]:
+    """Normalise a ``device_tools.register`` payload; malformed entries drop."""
+    if not isinstance(raw, list):
+        return []
+    tools: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        schema = item.get("input_schema")
+        tools.append(
+            {
+                "name": name,
+                "description": str(item.get("description") or ""),
+                "input_schema": schema
+                if isinstance(schema, dict)
+                else {"type": "object", "properties": {}},
+                "requires_confirmation": bool(item.get("requires_confirmation")),
+            }
+        )
+    return tools
 
 
 @dataclass
@@ -74,6 +101,11 @@ class DevicePresenceHub:
 
     def has_tools(self, user_id: int) -> bool:
         return any(d.user_id == user_id and d.tools for d in self._devices.values())
+
+    def connection_has_tools(self, connection_id: str) -> bool:
+        """True when this particular connection is advertising tools."""
+        device = self._devices.get(connection_id)
+        return device is not None and bool(device.tools)
 
     async def call(
         self,
@@ -135,4 +167,10 @@ class DevicePresenceHub:
 
 DEVICE_HUB = DevicePresenceHub()
 
-__all__ = ["CALL_TIMEOUT_SECONDS", "DEVICE_HUB", "DevicePresenceHub", "SendFn"]
+__all__ = [
+    "CALL_TIMEOUT_SECONDS",
+    "DEVICE_HUB",
+    "DevicePresenceHub",
+    "SendFn",
+    "valid_tools",
+]
