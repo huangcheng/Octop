@@ -377,6 +377,40 @@ async def cron_mcp_delete(token: str = Query(...)) -> Response:
     return Response(status_code=204)
 
 
+@router.post("/internal/mcp/device")
+async def device_mcp_post(
+    request: Request,
+    token: str = Query(...),
+) -> Response:
+    """Let a managed expert call the consented tools on the user's phone."""
+    from octop.infra.agents.acp.device_mcp import device_scope, handle_device_mcp
+
+    scope = device_scope(token)
+    if scope is None:
+        raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
+    body = await _mcp_body(request)
+    if str(body.get("method") or "") == "notifications/initialized":
+        return Response(status_code=202)
+    resp = await handle_device_mcp(body, scope=scope)
+    return _mcp_json(request, body, resp, session_id=_mcp_session(request, body))
+
+
+@router.get("/internal/mcp/device")
+async def device_mcp_get(request: Request, token: str = Query(...)) -> Response:
+    from octop.infra.agents.acp.device_mcp import device_scope
+
+    return _mcp_keepalive(request, authorized=device_scope(token) is not None)
+
+
+@router.delete("/internal/mcp/device")
+async def device_mcp_delete(token: str = Query(...)) -> Response:
+    from octop.infra.agents.acp.device_mcp import device_scope
+
+    if device_scope(token) is None:
+        raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
+    return Response(status_code=204)
+
+
 def _memory_service(registry: Any, agent_id: str) -> Any:
     try:
         agent = registry.get_agent(agent_id)

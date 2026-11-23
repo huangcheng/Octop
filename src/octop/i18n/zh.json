@@ -691,7 +691,39 @@
     "generate_image": "生成图片",
     "generate_video": "生成视频",
     "bilibili_search_anime": "搜索番剧",
-    "search_arxiv": "查询 arXiv 论文"
+    "search_arxiv": "查询 arXiv 论文",
+    "calendar": {
+      "list_events": "读取日程",
+      "create_event": "创建日程",
+      "update_event": "修改日程",
+      "delete_event": "删除日程"
+    },
+    "contacts": {
+      "search": "查找联系人"
+    },
+    "phone": {
+      "dial": "打开拨号盘",
+      "call": "拨打电话"
+    },
+    "sms": {
+      "compose": "打开短信编辑器",
+      "read": "读取短信",
+      "send": "发送短信"
+    },
+    "mail": {
+      "compose": "打开邮件编辑器"
+    },
+    "device_calendar_list_events": "读取日程",
+    "device_calendar_create_event": "创建日程",
+    "device_calendar_update_event": "修改日程",
+    "device_calendar_delete_event": "删除日程",
+    "device_contacts_search": "查找联系人",
+    "device_phone_dial": "打开拨号盘",
+    "device_phone_call": "拨打电话",
+    "device_sms_compose": "打开短信编辑器",
+    "device_sms_read": "读取短信",
+    "device_sms_send": "发送短信",
+    "device_mail_compose": "打开邮件编辑器"
   },
   "plugins": {
     "arxiv_search": {

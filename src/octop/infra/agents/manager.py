@@ -1613,6 +1613,44 @@ class AgentManager:
                 await worker
                 raise
 
+    def refresh_device_tools(self, user_id: int) -> None:
+        """Re-advertise the phone's consented tools on the user's running native experts.
+
+        Called when a device presence socket registers a new tool set or drops;
+        managed ACP runners pick the change up per turn through the device MCP.
+        """
+        from octop.infra.devices.langchain import DEVICE_TOOL_PREFIX, build_device_langchain_tools
+
+        if self._harness_manager is None:
+            return
+        fresh = build_device_langchain_tools(user_id)
+        fresh_names = {str(getattr(tool, "name", "")) for tool in fresh}
+        for row in self.list_agents(user_id):
+            if getattr(row, "kind", None) in ("managed", "team"):
+                continue
+            agent = self._octop_harness_or_none(row.agent_id)
+            if agent is None:
+                continue
+            current = list(getattr(agent, "_mcp_tools", []))
+            current_names = {
+                str(getattr(tool, "name", ""))
+                for tool in current
+                if str(getattr(tool, "name", "")).startswith(DEVICE_TOOL_PREFIX)
+            }
+            if current_names == fresh_names:
+                continue
+            keep = [
+                tool
+                for tool in current
+                if not str(getattr(tool, "name", "")).startswith(DEVICE_TOOL_PREFIX)
+            ]
+            agent.replace_mcp_tools(fresh + keep)
+            logger.info(
+                "Agent %s device tools refreshed: %s",
+                row.agent_id,
+                sorted(fresh_names),
+            )
+
     def list_agents(self, user_id: int) -> list[AgentRow]:
         return self._repos.agent_repo.list_by_user(user_id, include_disabled=False)
 
@@ -3906,6 +3944,12 @@ class AgentManager:
                 agent_id=row.agent_id,
                 mcp_server_configs=cfg.mcp_server_configs,
             )
+            if getattr(row, "kind", None) != "managed":
+                from octop.infra.devices.langchain import build_device_langchain_tools
+
+                device_tools = build_device_langchain_tools(uid)
+                if device_tools:
+                    agent.append_mcp_tools(device_tools)
         if not team_host:
             _sanitize_bound_mcp_tools(agent)
         if team_host:

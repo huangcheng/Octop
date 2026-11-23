@@ -691,7 +691,39 @@
     "generate_image": "Generate image",
     "generate_video": "Generate video",
     "bilibili_search_anime": "Search Bilibili anime",
-    "search_arxiv": "Search arXiv papers"
+    "search_arxiv": "Search arXiv papers",
+    "calendar": {
+      "list_events": "Read calendar",
+      "create_event": "Create calendar event",
+      "update_event": "Update calendar event",
+      "delete_event": "Delete calendar event"
+    },
+    "contacts": {
+      "search": "Search contacts"
+    },
+    "phone": {
+      "dial": "Open dialer",
+      "call": "Place call"
+    },
+    "sms": {
+      "compose": "Open SMS composer",
+      "read": "Read SMS",
+      "send": "Send SMS"
+    },
+    "mail": {
+      "compose": "Open mail composer"
+    },
+    "device_calendar_list_events": "Read calendar",
+    "device_calendar_create_event": "Create calendar event",
+    "device_calendar_update_event": "Update calendar event",
+    "device_calendar_delete_event": "Delete calendar event",
+    "device_contacts_search": "Search contacts",
+    "device_phone_dial": "Open dialer",
+    "device_phone_call": "Place call",
+    "device_sms_compose": "Open SMS composer",
+    "device_sms_read": "Read SMS",
+    "device_sms_send": "Send SMS",
+    "device_mail_compose": "Open mail composer"
   },
   "plugins": {
     "arxiv_search": {

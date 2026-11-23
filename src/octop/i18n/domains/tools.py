@@ -40,6 +40,18 @@ HITL_TOOL_EXCLUDE: frozenset[str] = frozenset(
         "acp_runner",
         # Managed ACP permission fallback. It is not a built-in tool users toggle.
         "external-agent",
+        # Device tools — their approval card lives on the phone, not in HITL.
+        "device_calendar_list_events",
+        "device_calendar_create_event",
+        "device_calendar_update_event",
+        "device_calendar_delete_event",
+        "device_contacts_search",
+        "device_phone_dial",
+        "device_phone_call",
+        "device_sms_compose",
+        "device_sms_read",
+        "device_sms_send",
+        "device_mail_compose",
     }
 )
 

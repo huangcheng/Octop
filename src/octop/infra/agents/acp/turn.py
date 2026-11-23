@@ -23,6 +23,7 @@ _FILES_NAME = "octop-files"
 _CRON_NAME = "octop-cron"
 _MEMORY_NAME = "octop-memory"
 _PLUGINS_NAME = "octop-plugins"
+_DEVICE_NAME = "octop-device"
 _TEAM_WORKSPACE_NAME = "octop-team-workspace"
 _LOOPBACK_NAMES = {
     _KNOWLEDGE_NAME,
@@ -31,6 +32,7 @@ _LOOPBACK_NAMES = {
     _CRON_NAME,
     _MEMORY_NAME,
     _PLUGINS_NAME,
+    _DEVICE_NAME,
     _TEAM_WORKSPACE_NAME,
 }
 
@@ -274,6 +276,22 @@ def _cron_note(locale: str, timezone_name: str) -> str:
     )
 
 
+def _device_note(locale: str) -> str:
+    """Tell the runner that device tools act on the user's phone, with on-phone approval."""
+    if locale.lower().startswith("zh"):
+        return (
+            "octop-device 工具在用户的手机上执行：读取类立即返回；"
+            "创建/修改日程、拨打电话、发送短信等写操作会先在手机上显示确认卡片，"
+            "用户批准后才执行，等待可能较长。结果为 cancelled 表示用户拒绝，不要重试。"
+        )
+    return (
+        "octop-device tools run on the user's phone: reads return immediately; "
+        "writes and outbound actions (create/update events, place calls, send SMS) "
+        "first show an approval card on the phone and only run after the user approves, "
+        "so the call may take a while. A 'cancelled' result means the user declined — do not retry."
+    )
+
+
 def _stored_config(manager: Any, agent_id: str) -> dict[str, Any]:
     getter = getattr(manager, "get_config", None)
     if not callable(getter):
@@ -377,6 +395,7 @@ async def managed_mcp_specs(
     """Specs and @ note for a managed turn. ``None`` when the agent is native."""
     from octop.infra.agents.acp.cron_mcp import CronScope, retain_cron_scope
     from octop.infra.agents.acp.delegation import prepare_managed_delegation
+    from octop.infra.agents.acp.device_mcp import DeviceScope, retain_device_scope
     from octop.infra.agents.acp.files_mcp import retain_file_scope
     from octop.infra.agents.acp.memory_mcp import memory_enabled, retain_memory_scope
     from octop.infra.agents.acp.plugins_mcp import plugin_tools, retain_plugin_scope
@@ -391,11 +410,13 @@ async def managed_mcp_specs(
     )
     from octop.infra.connectors.builder import (
         cron_mcp_url,
+        device_mcp_url,
         files_mcp_url,
         knowledge_mcp_url,
         memory_mcp_url,
         plugins_mcp_url,
     )
+    from octop.infra.devices.hub import DEVICE_HUB
 
     row = manager.get_row(agent_id)
     if not is_managed_agent(row):
@@ -501,6 +522,21 @@ async def managed_mcp_specs(
                 token=retain_plugin_scope(agent_id, plugin_tool_names),
             ),
         )
+    if user_id is not None and DEVICE_HUB.has_tools(user_id):
+        _attach(
+            specs,
+            _DEVICE_NAME,
+            device_mcp_url(
+                config=manager._config,
+                token=retain_device_scope(
+                    DeviceScope(
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        thread_id=_thread_id(request, cfg),
+                    )
+                ),
+            ),
+        )
     if send_enabled and workspace_note is None:
         file_note = _send_file_note(locale)
         note = f"{note}\n{file_note}" if note else file_note
@@ -510,6 +546,9 @@ async def managed_mcp_specs(
     if _CRON_NAME in specs:
         cron_note = _cron_note(locale, _server_timezone(manager))
         note = f"{note}\n{cron_note}" if note else cron_note
+    if _DEVICE_NAME in specs:
+        device_note = _device_note(locale)
+        note = f"{note}\n{device_note}" if note else device_note
     limit = _tool_limit_note(specs, locale)
     if limit:
         note = f"{note}\n{limit}" if note else limit

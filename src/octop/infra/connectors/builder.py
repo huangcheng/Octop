@@ -178,6 +178,11 @@ def memory_mcp_url(*, config: OctopConfig, token: str) -> str:
     return _loopback_mcp_url(config, "memory", token)
 
 
+def device_mcp_url(*, config: OctopConfig, token: str) -> str:
+    """Loopback URL for the consented device tools on the user's phone."""
+    return _loopback_mcp_url(config, "device", token)
+
+
 def plugins_mcp_url(*, config: OctopConfig, token: str) -> str:
     """Loopback URL for this expert's enabled plugin tools."""
     return _loopback_mcp_url(config, "plugins", token)
