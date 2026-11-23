@@ -4609,6 +4609,7 @@ class AgentManager:
         from octop.infra.agents.middleware.workspace_image import (
             WorkspaceImageMaterializeMiddleware,
         )
+        from octop.infra.gateway.device_tools_middleware import DeviceToolsMiddleware
         from octop.infra.knowledge.hint import KnowledgeSearchHintMiddleware
 
         # FilesystemGuard + ModelSettings live in octop-harness (auto-mounted).
@@ -4628,6 +4629,7 @@ class AgentManager:
             TeamDispatchBriefingMiddleware(),
             TeamFileTargetMiddleware(agent_id=row.agent_id, lookup=self.get_agent),
             KnowledgeSearchHintMiddleware(),
+            DeviceToolsMiddleware(),
             BrowserProfileMiddleware(),
             BinaryReadGuardMiddleware(),
             *(() if harness_handles_mcp_tool_errors() else (McpOutputSchemaMiddleware(),)),
